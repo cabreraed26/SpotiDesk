@@ -1,4 +1,4 @@
-import { Heart, Home, Lock, Search } from "lucide-react";
+import { Disc3, Heart, Home, Lock, Plus, Search, Users } from "lucide-react";
 import type { SpotifyPlaylist } from "../types/spotify";
 import { getBestImage, getPlaylistTrackCount } from "../lib/format";
 import { LazyCover } from "./LazyCover";
@@ -7,6 +7,8 @@ export type AppView =
   | { kind: "home" }
   | { kind: "search" }
   | { kind: "liked" }
+  | { kind: "albums" }
+  | { kind: "artists" }
   | { kind: "playlist"; id: string }
   | { kind: "album"; id: string };
 
@@ -16,6 +18,7 @@ interface SidebarProps {
   currentUserId?: string;
   isLoadingPlaylists: boolean;
   onSelectView: (view: AppView) => void;
+  onCreatePlaylist: () => void;
 }
 
 export function Sidebar({
@@ -24,15 +27,18 @@ export function Sidebar({
   currentUserId,
   isLoadingPlaylists,
   onSelectView,
+  onCreatePlaylist,
 }: SidebarProps) {
   const navItems: Array<{
-    kind: "home" | "search" | "liked";
+    kind: "home" | "search" | "liked" | "albums" | "artists";
     label: string;
     icon: typeof Home;
   }> = [
     { kind: "home", label: "Inicio", icon: Home },
     { kind: "search", label: "Buscar", icon: Search },
     { kind: "liked", label: "Tus Me Gusta", icon: Heart },
+    { kind: "albums", label: "Álbumes", icon: Disc3 },
+    { kind: "artists", label: "Artistas", icon: Users },
   ];
 
   return (
@@ -62,15 +68,27 @@ export function Sidebar({
       <div className="mx-4 h-px bg-[var(--border-hairline)]" />
 
       {/* Playlists section */}
-      <div className="px-5 pt-4 pb-2 flex items-center justify-between">
-        <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-tertiary)]">
-          Playlists
-        </span>
-        {playlists.length > 0 && (
-          <span className="text-[11px] tabular-nums text-[var(--text-tertiary)]">
-            {playlists.length}
+      <div className="px-4 pt-4 pb-2 flex items-center justify-between">
+        <div className="flex items-center gap-2 pl-1">
+          <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-tertiary)]">
+            Playlists
           </span>
-        )}
+          {playlists.length > 0 && (
+            <span className="text-[11px] tabular-nums text-[var(--text-tertiary)]">
+              {playlists.length}
+            </span>
+          )}
+        </div>
+
+        <button
+          type="button"
+          onClick={onCreatePlaylist}
+          title="Crear nueva playlist"
+          aria-label="Crear nueva playlist"
+          className="w-6 h-6 rounded-md flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all duration-200 active:scale-90 cursor-pointer"
+        >
+          <Plus size={14} strokeWidth={1.7} />
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 pb-28 space-y-0.5">

@@ -78,20 +78,32 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if window.label() == "main" {
-                if let WindowEvent::CloseRequested { api, .. } = event {
-                    let close_to_tray = window
-                        .app_handle()
-                        .state::<AppSettingsState>()
-                        .close_to_tray
-                        .load(Ordering::Relaxed);
+                match event {
+                    WindowEvent::CloseRequested { api, .. } => {
+                        let close_to_tray = window
+                            .app_handle()
+                            .state::<AppSettingsState>()
+                            .close_to_tray
+                            .load(Ordering::Relaxed);
 
-                    if close_to_tray {
-                        // Minimize to tray instead of exiting so music continues uninterrupted
-                        api.prevent_close();
-                        let _ = window.hide();
-                    } else {
+                        if close_to_tray {
+                            // Minimize to tray instead of exiting so music continues uninterrupted
+                            api.prevent_close();
+                            let _ = window.hide();
+                        } else {
+                            if let Some(notch) = window.app_handle().get_webview_window(notch::NOTCH_LABEL) {
+                                let _ = notch.destroy();
+                            }
+                            window.app_handle().exit(0);
+                        }
+                    }
+                    WindowEvent::Destroyed => {
+                        if let Some(notch) = window.app_handle().get_webview_window(notch::NOTCH_LABEL) {
+                            let _ = notch.destroy();
+                        }
                         window.app_handle().exit(0);
                     }
+                    _ => {}
                 }
             } else if window.label() == notch::NOTCH_LABEL {
                 if let WindowEvent::CloseRequested { api, .. } = event {

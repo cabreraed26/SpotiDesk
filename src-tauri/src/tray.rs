@@ -77,6 +77,12 @@ pub fn setup_tray(app: &App) -> tauri::Result<()> {
                 let _ = app.emit_to("main", "media-control", "previous");
             }
             "quit" => {
+                if let Some(notch) = app.get_webview_window(crate::notch::NOTCH_LABEL) {
+                    let _ = notch.destroy();
+                }
+                if let Some(main) = app.get_webview_window("main") {
+                    let _ = main.destroy();
+                }
                 app.exit(0);
             }
             _ => {}

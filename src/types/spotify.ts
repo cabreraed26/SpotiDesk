@@ -90,6 +90,21 @@ export interface SpotifySavedTrackItem {
   item?: SpotifyTrack | null;
 }
 
+export interface SpotifySavedAlbumItem {
+  added_at?: string;
+  album: SpotifyAlbumSimple;
+}
+
+export interface SpotifyCursorPaging<T> {
+  items: T[];
+  total?: number;
+  limit: number;
+  next: string | null;
+  cursors?: {
+    after?: string | null;
+  };
+}
+
 export interface SpotifyPaging<T> {
   items: T[];
   total: number;

@@ -1,10 +1,13 @@
 import type {
   SpotifyAlbumSimple,
+  SpotifyArtist,
+  SpotifyCursorPaging,
   SpotifyDevice,
   SpotifyPaging,
   SpotifyPlaybackStateResponse,
   SpotifyPlaylist,
   SpotifyPlaylistTrackItem,
+  SpotifySavedAlbumItem,
   SpotifySavedTrackItem,
   SpotifySearchResults,
   SpotifyTrack,
@@ -133,6 +136,63 @@ export class SpotifyApiClient {
     return this.request<SpotifyPaging<SpotifySavedTrackItem>>(
       `/me/tracks?limit=${limit}&offset=${offset}`
     );
+  }
+
+  getSavedAlbums(limit = 50, offset = 0): Promise<SpotifyPaging<SpotifySavedAlbumItem>> {
+    return this.request<SpotifyPaging<SpotifySavedAlbumItem>>(
+      `/me/albums?limit=${limit}&offset=${offset}`
+    );
+  }
+
+  async getFollowedArtists(
+    limit = 50,
+    after?: string
+  ): Promise<SpotifyCursorPaging<SpotifyArtist>> {
+    const params = new URLSearchParams({ type: "artist", limit: String(limit) });
+    if (after) params.set("after", after);
+    const data = await this.request<{ artists: SpotifyCursorPaging<SpotifyArtist> }>(
+      `/me/following?${params.toString()}`
+    );
+    return (
+      data?.artists ?? {
+        items: [],
+        limit,
+        next: null,
+      }
+    );
+  }
+
+  async createPlaylist(params: {
+    name: string;
+    description?: string;
+    isPublic?: boolean;
+    userId?: string;
+  }): Promise<SpotifyPlaylist> {
+    const body = JSON.stringify({
+      name: params.name.trim(),
+      description: params.description?.trim() || "",
+      public: Boolean(params.isPublic),
+    });
+
+    try {
+      // Spotify Web API >= Feb 2026 uses POST /me/playlists
+      return await this.request<SpotifyPlaylist>("/me/playlists", {
+        method: "POST",
+        body,
+      });
+    } catch (err) {
+      if (
+        params.userId &&
+        err instanceof SpotifyApiError &&
+        (err.status === 404 || err.status === 405)
+      ) {
+        return this.request<SpotifyPlaylist>(
+          `/users/${encodeURIComponent(params.userId)}/playlists`,
+          { method: "POST", body }
+        );
+      }
+      throw err;
+    }
   }
 
   getAlbum(albumId: string): Promise<

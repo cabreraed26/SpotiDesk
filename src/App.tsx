@@ -13,11 +13,13 @@ import { Sidebar, type AppView } from "./components/Sidebar";
 import { HomeView } from "./components/HomeView";
 import { SearchView } from "./components/SearchView";
 import { CollectionView } from "./components/CollectionView";
+import { LibraryView } from "./components/LibraryView";
 import { PlayerBar } from "./components/PlayerBar";
 import { NowPlayingStage, type TrackTransitionDir } from "./components/NowPlayingStage";
 import { TrackContextMenu, type ContextMenuState } from "./components/TrackContextMenu";
 import { QueueDrawer } from "./components/QueueDrawer";
 import { SettingsModal } from "./components/SettingsModal";
+import { CreatePlaylistModal } from "./components/CreatePlaylistModal";
 import { Toast, type ToastMessage } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SpotifyApiError } from "./lib/spotifyApi";
@@ -25,6 +27,18 @@ import type { SpotifyPlaylist, UnifiedTrack } from "./types/spotify";
 import type { NotchStatePayload } from "./components/DesktopNotch";
 
 const CLOSE_TO_TRAY_KEY = "spotidesk.close_to_tray";
+const DISCORD_ENABLED_KEY = "spotidesk.discord_enabled";
+const DISCORD_CLIENT_ID_KEY = "spotidesk.discord_client_id";
+
+function readInitialDiscordClientId(): string {
+  const fromEnv = (import.meta.env.VITE_DISCORD_CLIENT_ID as string | undefined)?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    return localStorage.getItem(DISCORD_CLIENT_ID_KEY)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
 
 export function App() {
   const { theme, toggleTheme, ambientEnabled, toggleAmbient } = useTheme();
@@ -41,11 +55,22 @@ export function App() {
   const [isStageOpen, setIsStageOpen] = useState(false);
   const [isQueueOpen, setIsQueueOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isCreatePlaylistOpen, setIsCreatePlaylistOpen] = useState(false);
   const [trackDir, setTrackDir] = useState<TrackTransitionDir>("next");
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [isCurrentLiked, setIsCurrentLiked] = useState(false);
   const [notchVisible, setNotchVisible] = useState(true);
+  const [discordClientId, setDiscordClientIdState] = useState<string>(readInitialDiscordClientId);
+  const [discordEnabled, setDiscordEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(DISCORD_ENABLED_KEY);
+      if (saved !== null) return saved === "true";
+    } catch {
+      // Ignore
+    }
+    return Boolean(readInitialDiscordClientId());
+  });
   const [closeToTray, setCloseToTray] = useState<boolean>(() => {
     try {
       const saved = localStorage.getItem(CLOSE_TO_TRAY_KEY);
@@ -91,6 +116,59 @@ export function App() {
       // Ignore storage errors
     }
   }, [closeToTray]);
+
+  const setDiscordClientId = useCallback((value: string) => {
+    const trimmed = value.trim();
+    setDiscordClientIdState(trimmed);
+    try {
+      localStorage.setItem(DISCORD_CLIENT_ID_KEY, trimmed);
+    } catch {
+      // Ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DISCORD_ENABLED_KEY, String(discordEnabled));
+    } catch {
+      // Ignore
+    }
+  }, [discordEnabled]);
+
+  // Sync Discord Rich Presence natively via Rust IPC whenever track or play state changes
+  const positionMsRef = useRef(player.positionMs);
+  positionMsRef.current = player.positionMs;
+
+  useEffect(() => {
+    const trimmedId = discordClientId.trim();
+    if (!auth.isAuthenticated || !discordEnabled || !trimmedId || !player.currentTrack) {
+      void invoke("clear_discord_presence").catch(() => {});
+      return;
+    }
+
+    const track = player.currentTrack;
+    const trackId = track.id || track.uri.split(":").pop();
+    void invoke("update_discord_presence", {
+      payload: {
+        clientId: trimmedId,
+        trackName: track.name,
+        artists: track.artists,
+        albumName: track.albumName || null,
+        albumImage: track.albumImageLarge || track.albumImage || null,
+        trackUrl: trackId ? `https://open.spotify.com/track/${trackId}` : null,
+        isPlaying: player.isPlaying,
+        positionMs: Math.max(0, Math.round(positionMsRef.current)),
+        durationMs: Math.max(0, Math.round(player.durationMs || track.durationMs || 0)),
+      },
+    }).catch(() => {});
+  }, [
+    auth.isAuthenticated,
+    discordEnabled,
+    discordClientId,
+    player.currentTrack,
+    player.isPlaying,
+    player.durationMs,
+  ]);
 
   // Smooth shared-element View Transition between PlayerBar capsule and Full-Screen Stage
   const setStageWithTransition = useCallback((open: boolean) => {
@@ -272,6 +350,21 @@ export function App() {
       }
     },
     [auth.api, showToast]
+  );
+
+  const handleCreatePlaylist = useCallback(
+    async (params: { name: string; description: string; isPublic: boolean }) => {
+      const created = await auth.api.createPlaylist({
+        name: params.name,
+        description: params.description,
+        isPublic: params.isPublic,
+        userId: auth.user?.id,
+      });
+      setPlaylists((prev) => [created, ...prev]);
+      setActiveView({ kind: "playlist", id: created.id });
+      showToast(`Playlist "${created.name}" creada`);
+    },
+    [auth.api, auth.user?.id, showToast]
   );
 
   const handleToggleLike = useCallback(
@@ -488,12 +581,23 @@ export function App() {
           ambientEnabled={ambientEnabled}
           notchVisible={notchVisible}
           closeToTray={closeToTray}
+          discordEnabled={discordEnabled}
+          discordClientId={discordClientId}
           onToggleTheme={toggleTheme}
           onToggleAmbient={toggleAmbient}
           onToggleNotch={() => void handleToggleNotch()}
           onToggleCloseToTray={setCloseToTray}
+          onToggleDiscord={setDiscordEnabled}
+          onChangeDiscordClientId={setDiscordClientId}
           onLogout={auth.isAuthenticated ? () => void auth.logout() : undefined}
           onClose={() => setIsSettingsOpen(false)}
+        />
+      )}
+
+      {isCreatePlaylistOpen && (
+        <CreatePlaylistModal
+          onCreate={handleCreatePlaylist}
+          onClose={() => setIsCreatePlaylistOpen(false)}
         />
       )}
 
@@ -517,6 +621,7 @@ export function App() {
               currentUserId={auth.user?.id}
               isLoadingPlaylists={isLoadingPlaylists}
               onSelectView={handleSelectView}
+              onCreatePlaylist={() => setIsCreatePlaylistOpen(true)}
             />
 
             <main className="flex-1 flex flex-col min-w-0 min-h-0 relative">
@@ -559,6 +664,18 @@ export function App() {
                   onTogglePlay={() => void player.togglePlay()}
                   onSelectAlbum={(id) => setActiveView({ kind: "album", id })}
                   onTrackContextMenu={handleOpenContextMenu}
+                />
+              )}
+
+              {(activeView.kind === "albums" || activeView.kind === "artists") && (
+                <LibraryView
+                  mode={activeView.kind}
+                  api={auth.api}
+                  onSelectAlbum={(id) => setActiveView({ kind: "album", id })}
+                  onPlayContext={async (opts) => {
+                    setTrackDir("next");
+                    await player.playContext(opts);
+                  }}
                 />
               )}
 
