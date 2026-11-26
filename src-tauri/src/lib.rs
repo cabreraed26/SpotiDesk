@@ -1,5 +1,4 @@
 mod auth;
-mod discord;
 mod notch;
 mod shortcuts;
 mod tray;
@@ -138,7 +137,6 @@ pub fn run() {
         .plugin(shortcuts::build_plugin())
         .manage(auth::AuthState::new())
         .manage(AppSettingsState::new())
-        .manage(discord::DiscordState::new())
         .manage(notch::NotchState::new())
         .setup(|app| {
             tray::setup_tray(app)?;
@@ -202,14 +200,16 @@ pub fn run() {
             notch::get_notch_visible,
             notch::get_notch_layout,
             notch::set_notch_position,
+            notch::begin_bubble_drag,
+            notch::drag_bubble_move,
+            notch::end_bubble_drag,
+            notch::set_bubble_position,
             notch::send_notch_state,
             notch::send_notch_action,
             get_close_to_tray,
             set_close_to_tray,
             get_autostart_enabled,
             set_autostart_enabled,
-            discord::update_discord_presence,
-            discord::clear_discord_presence,
             quit_app,
         ])
         .run(tauri::generate_context!())

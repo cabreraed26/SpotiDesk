@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 #[cfg(not(target_os = "macos"))]
@@ -26,6 +27,17 @@ pub const MAC_TOP_CANVAS_HEIGHT: f64 = 264.0;
 pub const SIDE_CANVAS_WIDTH: f64 = 428.0;
 pub const SIDE_CANVAS_HEIGHT: f64 = 228.0;
 
+// Bottom-right / draggable radial bubble canvas dimensions (centered hub so satellites
+// can bloom in any quadrant without ever clipping)
+pub const BUBBLE_CANVAS_WIDTH: f64 = 360.0;
+pub const BUBBLE_CANVAS_HEIGHT: f64 = 360.0;
+const BUBBLE_HUB_CX: f64 = 180.0;
+const BUBBLE_HUB_CY: f64 = 180.0;
+const BUBBLE_COLLAPSED_R: f64 = 36.0;
+const BUBBLE_EXPANDED_R: f64 = 178.0;
+#[cfg(not(target_os = "macos"))]
+const BUBBLE_TASKBAR_OFFSET: f64 = 52.0;
+
 // Logical hitboxes inside the top-centered fixed canvas
 const TOP_COLLAPSED_HIT_W: f64 = 158.0;
 const TOP_COLLAPSED_HIT_H: f64 = 42.0;
@@ -47,6 +59,7 @@ pub enum NotchPosition {
     Top,
     Left,
     Right,
+    Bubble,
 }
 
 impl Default for NotchPosition {
@@ -63,6 +76,7 @@ pub struct NotchLayoutPayload {
     pub has_hardware_notch: bool,
     pub notch_width: f64,
     pub notch_height: f64,
+    pub bubble_quadrant: String,
 }
 
 impl Default for NotchLayoutPayload {
@@ -73,18 +87,25 @@ impl Default for NotchLayoutPayload {
             has_hardware_notch: false,
             notch_width: 0.0,
             notch_height: 0.0,
+            bubble_quadrant: "br".to_string(),
         }
     }
 }
 
 pub struct NotchState {
     layout: Mutex<NotchLayoutPayload>,
+    is_dragging: AtomicBool,
+    bubble_origin: Mutex<Option<(f64, f64)>>,
+    drag_offset: Mutex<(f64, f64)>,
 }
 
 impl NotchState {
     pub fn new() -> Self {
         Self {
             layout: Mutex::new(NotchLayoutPayload::default()),
+            is_dragging: AtomicBool::new(false),
+            bubble_origin: Mutex::new(None),
+            drag_offset: Mutex::new((BUBBLE_HUB_CX, BUBBLE_HUB_CY)),
         }
     }
 
@@ -99,6 +120,20 @@ impl NotchState {
         if let Ok(mut guard) = self.layout.lock() {
             *guard = layout;
         }
+    }
+
+    pub fn bubble_origin(&self) -> Option<(f64, f64)> {
+        self.bubble_origin.lock().ok().and_then(|g| *g)
+    }
+
+    pub fn set_bubble_origin(&self, origin: Option<(f64, f64)>) {
+        if let Ok(mut guard) = self.bubble_origin.lock() {
+            *guard = origin;
+        }
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        self.is_dragging.load(Ordering::Relaxed)
     }
 }
 
@@ -115,6 +150,7 @@ fn canvas_size_for(position: NotchPosition) -> (f64, f64) {
             }
         }
         NotchPosition::Left | NotchPosition::Right => (SIDE_CANVAS_WIDTH, SIDE_CANVAS_HEIGHT),
+        NotchPosition::Bubble => (BUBBLE_CANVAS_WIDTH, BUBBLE_CANVAS_HEIGHT),
     }
 }
 
@@ -198,6 +234,7 @@ mod macos_notch {
             has_hardware_notch: false,
             notch_width: 0.0,
             notch_height: 32.0,
+            bubble_quadrant: "br".to_string(),
         };
 
         if let Ok(ptr) = window.ns_window() {
@@ -224,6 +261,7 @@ mod macos_notch {
 
             if let Some(screen) = pick_screen(ns_win, mtm) {
                 let frame = screen.frame();
+                let visible = screen.visibleFrame();
                 let (has_hw, cutout_w, notch_h) = detect_screen_notch(&screen);
                 layout.has_hardware_notch = has_hw;
                 layout.notch_width = cutout_w;
@@ -242,6 +280,10 @@ mod macos_notch {
                     NotchPosition::Right => (
                         frame.origin.x + frame.size.width - canvas_w,
                         frame.origin.y + (frame.size.height - canvas_h) / 2.0,
+                    ),
+                    NotchPosition::Bubble => (
+                        visible.origin.x + visible.size.width - canvas_w,
+                        visible.origin.y + 10.0,
                     ),
                 };
 
@@ -278,6 +320,7 @@ mod macos_notch {
                     has_hardware_notch: false,
                     notch_width: 0.0,
                     notch_height: 32.0,
+                    bubble_quadrant: "br".to_string(),
                 }
             };
             let _ = tx.send(layout);
@@ -290,7 +333,19 @@ mod macos_notch {
                 has_hardware_notch: false,
                 notch_width: 0.0,
                 notch_height: 32.0,
+                bubble_quadrant: "br".to_string(),
             })
+    }
+}
+
+fn compute_quadrant(hub_x: f64, hub_y: f64, mon_x: f64, mon_y: f64, mon_w: f64, mon_h: f64) -> String {
+    let is_right = hub_x >= mon_x + mon_w * 0.5;
+    let is_bottom = hub_y >= mon_y + mon_h * 0.5;
+    match (is_bottom, is_right) {
+        (true, true) => "br".to_string(),
+        (true, false) => "bl".to_string(),
+        (false, true) => "tr".to_string(),
+        (false, false) => "tl".to_string(),
     }
 }
 
@@ -298,8 +353,10 @@ mod macos_notch {
 fn position_notch_canvas_non_macos(
     window: &WebviewWindow,
     position: NotchPosition,
+    saved_bubble_origin: Option<(f64, f64)>,
 ) -> NotchLayoutPayload {
     let (canvas_w, canvas_h) = canvas_size_for(position);
+    let mut bubble_quadrant = "br".to_string();
 
     let monitor = window
         .current_monitor()
@@ -321,6 +378,23 @@ fn position_notch_canvas_non_macos(
             NotchPosition::Top => (mon_x + (mon_w - canvas_w) / 2.0, mon_y),
             NotchPosition::Left => (mon_x, mon_y + (mon_h - canvas_h) / 2.0),
             NotchPosition::Right => (mon_x + mon_w - canvas_w, mon_y + (mon_h - canvas_h) / 2.0),
+            NotchPosition::Bubble => {
+                // Default puts hub nicely near bottom-right above Windows taskbar
+                let default_x = mon_x + mon_w - BUBBLE_HUB_CX - 54.0;
+                let default_y = mon_y + mon_h - BUBBLE_HUB_CY - BUBBLE_TASKBAR_OFFSET - 42.0;
+                let (raw_x, raw_y) = saved_bubble_origin.unwrap_or((default_x, default_y));
+                let clamped_x = raw_x.clamp(mon_x - BUBBLE_HUB_CX + 38.0, mon_x + mon_w - BUBBLE_HUB_CX - 38.0);
+                let clamped_y = raw_y.clamp(mon_y - BUBBLE_HUB_CY + 38.0, mon_y + mon_h - BUBBLE_HUB_CY - 38.0);
+                bubble_quadrant = compute_quadrant(
+                    clamped_x + BUBBLE_HUB_CX,
+                    clamped_y + BUBBLE_HUB_CY,
+                    mon_x,
+                    mon_y,
+                    mon_w,
+                    mon_h,
+                );
+                (clamped_x, clamped_y)
+            }
         };
 
         let _ = window.set_size(Size::Logical(LogicalSize {
@@ -336,15 +410,21 @@ fn position_notch_canvas_non_macos(
         has_hardware_notch: false,
         notch_width: 0.0,
         notch_height: 0.0,
+        bubble_quadrant,
     }
 }
 
 pub fn apply_notch_layout(app: &AppHandle, window: &WebviewWindow, position: NotchPosition) -> NotchLayoutPayload {
+    let saved_bubble = app.state::<NotchState>().bubble_origin();
+
     #[cfg(target_os = "macos")]
-    let layout = macos_notch::apply_layout(window, position);
+    let layout = {
+        let _ = saved_bubble;
+        macos_notch::apply_layout(window, position)
+    };
 
     #[cfg(not(target_os = "macos"))]
-    let layout = position_notch_canvas_non_macos(window, position);
+    let layout = position_notch_canvas_non_macos(window, position, saved_bubble);
 
     app.state::<NotchState>().update(layout.clone());
     let _ = app.emit_to(NOTCH_LABEL, "notch-layout", &layout);
@@ -419,6 +499,15 @@ fn compute_hitboxes(layout: &NotchLayoutPayload) -> ((f64, f64, f64, f64), (f64,
                 (canvas_h + SIDE_EXPANDED_HIT_H) / 2.0,
             ),
         ),
+        NotchPosition::Bubble => (
+            (
+                BUBBLE_HUB_CX - BUBBLE_COLLAPSED_R,
+                BUBBLE_HUB_CX + BUBBLE_COLLAPSED_R,
+                BUBBLE_HUB_CY - BUBBLE_COLLAPSED_R,
+                BUBBLE_HUB_CY + BUBBLE_COLLAPSED_R,
+            ),
+            (0.0, BUBBLE_CANVAS_WIDTH, 0.0, BUBBLE_CANVAS_HEIGHT),
+        ),
     }
 }
 
@@ -434,7 +523,18 @@ fn spawn_cursor_tracker(app: AppHandle) {
                 continue;
             };
 
-            let layout = app.state::<NotchState>().snapshot();
+            let state = app.state::<NotchState>();
+            if state.is_dragging() {
+                if expanded {
+                    expanded = false;
+                    outside_ticks = 0;
+                    let _ = window.emit("notch-hover", false);
+                }
+                tokio::time::sleep(Duration::from_millis(45)).await;
+                continue;
+            }
+
+            let layout = state.snapshot();
             if layout.position != last_position {
                 last_position = layout.position;
                 if expanded {
@@ -466,8 +566,24 @@ fn spawn_cursor_tracker(app: AppHandle) {
 
                 let ((cx1, cx2, cy1, cy2), (ex1, ex2, ey1, ey2)) = compute_hitboxes(&layout);
 
-                let in_collapsed = rel_x >= cx1 && rel_x <= cx2 && rel_y >= cy1 && rel_y <= cy2;
-                let in_expanded = rel_x >= ex1 && rel_x <= ex2 && rel_y >= ey1 && rel_y <= ey2;
+                let (in_collapsed, in_expanded) = if layout.position == NotchPosition::Bubble {
+                    let dx = rel_x - BUBBLE_HUB_CX;
+                    let dy = rel_y - BUBBLE_HUB_CY;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    (
+                        dist <= BUBBLE_COLLAPSED_R,
+                        dist <= BUBBLE_EXPANDED_R
+                            && rel_x >= ex1
+                            && rel_x <= ex2
+                            && rel_y >= ey1
+                            && rel_y <= ey2,
+                    )
+                } else {
+                    (
+                        rel_x >= cx1 && rel_x <= cx2 && rel_y >= cy1 && rel_y <= cy2,
+                        rel_x >= ex1 && rel_x <= ex2 && rel_y >= ey1 && rel_y <= ey2,
+                    )
+                };
 
                 if !expanded && in_collapsed {
                     expanded = true;
@@ -587,6 +703,126 @@ pub fn set_notch_position(app: AppHandle, position: NotchPosition) -> NotchLayou
         current.position = position;
         app.state::<NotchState>().update(current.clone());
         current
+    }
+}
+
+#[tauri::command]
+pub fn begin_bubble_drag(app: AppHandle, state: State<'_, NotchState>) {
+    state.is_dragging.store(true, Ordering::Relaxed);
+    if let Some(window) = app.get_webview_window(NOTCH_LABEL) {
+        let _ = window.set_ignore_cursor_events(false);
+        let _ = window.emit("notch-hover", false);
+        if let (Ok(cursor), Ok(win_pos), Ok(scale)) = (
+            window.cursor_position(),
+            window.outer_position(),
+            window.scale_factor(),
+        ) {
+            let off_x = (cursor.x - win_pos.x as f64) / scale;
+            let off_y = (cursor.y - win_pos.y as f64) / scale;
+            if let Ok(mut guard) = state.drag_offset.lock() {
+                *guard = (off_x, off_y);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn drag_bubble_move(app: AppHandle, state: State<'_, NotchState>) {
+    if !state.is_dragging() {
+        return;
+    }
+    let Some(window) = app.get_webview_window(NOTCH_LABEL) else {
+        return;
+    };
+    let (off_x, off_y) = state
+        .drag_offset
+        .lock()
+        .map(|g| *g)
+        .unwrap_or((BUBBLE_HUB_CX, BUBBLE_HUB_CY));
+
+    let Ok(cursor) = window.cursor_position() else {
+        return;
+    };
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+
+    let mut target_x = cursor.x / scale - off_x;
+    let mut target_y = cursor.y / scale - off_y;
+
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+
+    if let Some(monitor) = monitor {
+        let m_scale = monitor.scale_factor();
+        let mon_x = monitor.position().x as f64 / m_scale;
+        let mon_y = monitor.position().y as f64 / m_scale;
+        let mon_w = monitor.size().width as f64 / m_scale;
+        let mon_h = monitor.size().height as f64 / m_scale;
+
+        target_x = target_x.clamp(
+            mon_x - BUBBLE_HUB_CX + 38.0,
+            mon_x + mon_w - BUBBLE_HUB_CX - 38.0,
+        );
+        target_y = target_y.clamp(
+            mon_y - BUBBLE_HUB_CY + 38.0,
+            mon_y + mon_h - BUBBLE_HUB_CY - 38.0,
+        );
+    }
+
+    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
+        x: target_x,
+        y: target_y,
+    }));
+    state.set_bubble_origin(Some((target_x, target_y)));
+}
+
+#[tauri::command]
+pub fn end_bubble_drag(app: AppHandle, state: State<'_, NotchState>) -> Option<(f64, f64)> {
+    state.is_dragging.store(false, Ordering::Relaxed);
+    let origin = state.bubble_origin();
+
+    if let (Some((x, y)), Some(window)) = (origin, app.get_webview_window(NOTCH_LABEL)) {
+        if let Some(monitor) = window
+            .current_monitor()
+            .ok()
+            .flatten()
+            .or_else(|| window.primary_monitor().ok().flatten())
+        {
+            let m_scale = monitor.scale_factor();
+            let mon_x = monitor.position().x as f64 / m_scale;
+            let mon_y = monitor.position().y as f64 / m_scale;
+            let mon_w = monitor.size().width as f64 / m_scale;
+            let mon_h = monitor.size().height as f64 / m_scale;
+
+            let quad = compute_quadrant(
+                x + BUBBLE_HUB_CX,
+                y + BUBBLE_HUB_CY,
+                mon_x,
+                mon_y,
+                mon_w,
+                mon_h,
+            );
+            let mut layout = state.snapshot();
+            layout.bubble_quadrant = quad;
+            state.update(layout.clone());
+            let _ = app.emit_to(NOTCH_LABEL, "notch-layout", &layout);
+        }
+    }
+
+    origin
+}
+
+#[tauri::command]
+pub fn set_bubble_position(app: AppHandle, state: State<'_, NotchState>, x: f64, y: f64) {
+    state.set_bubble_origin(Some((x, y)));
+    if state.snapshot().position == NotchPosition::Bubble {
+        if let Some(window) = app.get_webview_window(NOTCH_LABEL) {
+            apply_notch_layout(&app, &window, NotchPosition::Bubble);
+        }
     }
 }
 

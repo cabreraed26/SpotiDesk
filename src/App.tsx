@@ -30,27 +30,17 @@ import type { NotchPosition, NotchStatePayload } from "./components/DesktopNotch
 const CLOSE_TO_TRAY_KEY = "spotidesk.close_to_tray";
 const NOTCH_POSITION_KEY = "spotidesk.notch_position";
 const AUTOPLAY_ENABLED_KEY = "spotidesk.autoplay_enabled";
-const DISCORD_ENABLED_KEY = "spotidesk.discord_enabled";
-const DISCORD_CLIENT_ID_KEY = "spotidesk.discord_client_id";
 
 function readInitialNotchPosition(): NotchPosition {
   try {
     const saved = localStorage.getItem(NOTCH_POSITION_KEY);
-    if (saved === "top" || saved === "left" || saved === "right") return saved;
+    if (saved === "top" || saved === "left" || saved === "right" || saved === "bubble") {
+      return saved;
+    }
   } catch {
     // Ignore
   }
   return "top";
-}
-
-function readInitialDiscordClientId(): string {
-  const fromEnv = (import.meta.env.VITE_DISCORD_CLIENT_ID as string | undefined)?.trim();
-  if (fromEnv) return fromEnv;
-  try {
-    return localStorage.getItem(DISCORD_CLIENT_ID_KEY)?.trim() ?? "";
-  } catch {
-    return "";
-  }
 }
 
 export function App() {
@@ -106,16 +96,6 @@ export function App() {
   const [notchPosition, setNotchPositionState] = useState<NotchPosition>(readInitialNotchPosition);
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
   const isMac = /mac/i.test(navigator.platform || navigator.userAgent);
-  const [discordClientId, setDiscordClientIdState] = useState<string>(readInitialDiscordClientId);
-  const [discordEnabled, setDiscordEnabled] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem(DISCORD_ENABLED_KEY);
-      if (saved !== null) return saved === "true";
-    } catch {
-      // Ignore
-    }
-    return Boolean(readInitialDiscordClientId());
-  });
   const [closeToTray, setCloseToTray] = useState<boolean>(() => {
     try {
       const saved = localStorage.getItem(CLOSE_TO_TRAY_KEY);
@@ -149,16 +129,6 @@ export function App() {
     }
   }, [closeToTray]);
 
-  const setDiscordClientId = useCallback((value: string) => {
-    const trimmed = value.trim();
-    setDiscordClientIdState(trimmed);
-    try {
-      localStorage.setItem(DISCORD_CLIENT_ID_KEY, trimmed);
-    } catch {
-      // Ignore
-    }
-  }, []);
-
   useEffect(() => {
     try {
       localStorage.setItem(AUTOPLAY_ENABLED_KEY, String(autoplayEnabled));
@@ -166,49 +136,6 @@ export function App() {
       // Ignore
     }
   }, [autoplayEnabled]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(DISCORD_ENABLED_KEY, String(discordEnabled));
-    } catch {
-      // Ignore
-    }
-  }, [discordEnabled]);
-
-  // Sync Discord Rich Presence natively via Rust IPC whenever track or play state changes
-  const positionMsRef = useRef(player.positionMs);
-  positionMsRef.current = player.positionMs;
-
-  useEffect(() => {
-    const trimmedId = discordClientId.trim();
-    if (!auth.isAuthenticated || !discordEnabled || !trimmedId || !player.currentTrack) {
-      void invoke("clear_discord_presence").catch(() => {});
-      return;
-    }
-
-    const track = player.currentTrack;
-    const trackId = track.id || track.uri.split(":").pop();
-    void invoke("update_discord_presence", {
-      payload: {
-        clientId: trimmedId,
-        trackName: track.name,
-        artists: track.artists,
-        albumName: track.albumName || null,
-        albumImage: track.albumImageLarge || track.albumImage || null,
-        trackUrl: trackId ? `https://open.spotify.com/track/${trackId}` : null,
-        isPlaying: player.isPlaying,
-        positionMs: Math.max(0, Math.round(positionMsRef.current)),
-        durationMs: Math.max(0, Math.round(player.durationMs || track.durationMs || 0)),
-      },
-    }).catch(() => {});
-  }, [
-    auth.isAuthenticated,
-    discordEnabled,
-    discordClientId,
-    player.currentTrack,
-    player.isPlaying,
-    player.durationMs,
-  ]);
 
   // Smooth shared-element View Transition between PlayerBar capsule and Full-Screen Stage
   const setStageWithTransition = useCallback((open: boolean) => {
@@ -293,7 +220,13 @@ export function App() {
     (position: NotchPosition) => {
       setNotchPositionState(position);
       const label =
-        position === "left" ? "izquierda" : position === "right" ? "derecha" : "superior";
+        position === "left"
+          ? "izquierda"
+          : position === "right"
+            ? "derecha"
+            : position === "bubble"
+              ? "burbuja (inferior derecha)"
+              : "superior";
       showToast(`Posición del Notch: ${label}`);
     },
     [showToast]
@@ -688,16 +621,12 @@ export function App() {
           notchVisible={notchVisible}
           notchPosition={notchPosition}
           closeToTray={closeToTray}
-          discordEnabled={discordEnabled}
-          discordClientId={discordClientId}
           onToggleTheme={toggleTheme}
           onToggleAmbient={toggleAmbient}
           onToggleAutoplay={setAutoplayEnabled}
           onToggleNotch={() => void handleToggleNotch()}
           onChangeNotchPosition={handleChangeNotchPosition}
           onToggleCloseToTray={setCloseToTray}
-          onToggleDiscord={setDiscordEnabled}
-          onChangeDiscordClientId={setDiscordClientId}
           onLogout={auth.isAuthenticated ? () => void auth.logout() : undefined}
           onClose={() => setIsSettingsOpen(false)}
         />

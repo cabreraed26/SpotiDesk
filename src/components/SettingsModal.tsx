@@ -12,16 +12,12 @@ interface SettingsModalProps {
   notchVisible: boolean;
   notchPosition: NotchPosition;
   closeToTray: boolean;
-  discordEnabled: boolean;
-  discordClientId: string;
   onToggleTheme: () => void;
   onToggleAmbient: () => void;
   onToggleAutoplay: (enabled: boolean) => void;
   onToggleNotch: () => void;
   onChangeNotchPosition: (position: NotchPosition) => void;
   onToggleCloseToTray: (enabled: boolean) => void;
-  onToggleDiscord: (enabled: boolean) => void;
-  onChangeDiscordClientId: (clientId: string) => void;
   onLogout?: () => void;
   onClose: () => void;
 }
@@ -67,16 +63,12 @@ export function SettingsModal({
   notchVisible,
   notchPosition,
   closeToTray,
-  discordEnabled,
-  discordClientId,
   onToggleTheme,
   onToggleAmbient,
   onToggleAutoplay,
   onToggleNotch,
   onChangeNotchPosition,
   onToggleCloseToTray,
-  onToggleDiscord,
-  onChangeDiscordClientId,
   onLogout,
   onClose,
 }: SettingsModalProps) {
@@ -245,8 +237,8 @@ export function SettingsModal({
                   </label>
                   <div className="text-[11.5px] text-[var(--text-secondary)]">
                     {isMac
-                      ? "Superior se sobrepone al notch de macOS"
-                      : "Elige en qué borde mostrar el Notch"}
+                      ? "Superior se sobrepone al notch de macOS, o elige burbuja flotante"
+                      : "Elige el borde del Notch o la burbuja radial flotante"}
                   </div>
                 </div>
                 <select
@@ -259,6 +251,7 @@ export function SettingsModal({
                   <option value="top">Superior</option>
                   <option value="left">Izquierda</option>
                   <option value="right">Derecha</option>
+                  <option value="bubble">Burbuja (abajo der.)</option>
                 </select>
               </div>
 
@@ -299,56 +292,6 @@ export function SettingsModal({
             {autostartError && (
               <p className="text-[11.5px] text-[var(--text-secondary)] px-1">{autostartError}</p>
             )}
-          </section>
-
-          {/* Discord Rich Presence */}
-          <section className="space-y-3">
-            <h3 className="text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--text-tertiary)]">
-              Discord Rich Presence
-            </h3>
-
-            <div className="rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-elevated)]/70 divide-y divide-[var(--border-hairline)]">
-              <div className="px-4 py-3 flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-[13px] font-medium text-[var(--text-primary)]">
-                    Mostrar actividad en Discord
-                  </div>
-                  <div className="text-[11.5px] text-[var(--text-secondary)]">
-                    Muestra canción, portada y tiempo restante en tu perfil
-                  </div>
-                </div>
-                <AppleSwitch
-                  checked={discordEnabled}
-                  onChange={() => onToggleDiscord(!discordEnabled)}
-                  label="Activar Discord Rich Presence"
-                />
-              </div>
-
-              {discordEnabled && (
-                <div className="px-4 py-3 space-y-2">
-                  <label
-                    htmlFor="discord-app-id"
-                    className="block text-[11.5px] font-medium text-[var(--text-secondary)]"
-                  >
-                    Discord Application ID
-                  </label>
-                  <input
-                    id="discord-app-id"
-                    type="text"
-                    value={discordClientId}
-                    onChange={(e) => onChangeDiscordClientId(e.target.value)}
-                    placeholder="Ej. 1234567890123456789"
-                    spellCheck={false}
-                    className="w-full h-9 px-3 rounded-lg text-[12.5px] font-mono bg-[var(--bg-primary)] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] border border-[var(--border-subtle)] focus:outline-none focus:border-[var(--text-primary)] transition-colors"
-                  />
-                  <p className="text-[11px] leading-relaxed text-[var(--text-tertiary)]">
-                    Crea una app llamada <strong className="text-[var(--text-secondary)]">SpotiDesk</strong> en{" "}
-                    <code>discord.com/developers/applications</code> y pega su Application ID aquí (o en{" "}
-                    <code>VITE_DISCORD_CLIENT_ID</code>).
-                  </p>
-                </div>
-              )}
-            </div>
           </section>
 
           {/* Shortcuts */}
