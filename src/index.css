@@ -1,0 +1,804 @@
+@import "tailwindcss";
+
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-primary: #000000;
+  --bg-elevated: #0A0A0C;
+  --bg-card: #121215;
+  --bg-hover: rgba(255, 255, 255, 0.055);
+  --bg-active: rgba(255, 255, 255, 0.1);
+  --bg-sidebar: rgba(10, 10, 12, 0.78);
+  --bg-glass: rgba(18, 18, 21, 0.78);
+  --bg-popover: rgba(18, 18, 22, 0.92);
+
+  --text-primary: #F5F5F7;
+  --text-secondary: #86868B;
+  --text-tertiary: #5B5B60;
+
+  --border-hairline: rgba(255, 255, 255, 0.08);
+  --border-subtle: rgba(255, 255, 255, 0.14);
+
+  --solid-bg: #F5F5F7;
+  --solid-fg: #000000;
+  --solid-hover: #FFFFFF;
+
+  --slider-track: rgba(255, 255, 255, 0.16);
+  --slider-fill: #F5F5F7;
+  --scrollbar-thumb: rgba(255, 255, 255, 0.24);
+  --shadow-capsule: 0 18px 48px rgba(0, 0, 0, 0.65), 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+  --shadow-popover: 0 20px 48px rgba(0, 0, 0, 0.72);
+  --shadow-artwork: 0 20px 44px rgba(0, 0, 0, 0.55);
+  --shadow-stage-playing: 0 36px 90px rgba(0, 0, 0, 0.78), 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-stage-paused: 0 16px 40px rgba(0, 0, 0, 0.45);
+
+  --ease-apple: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg-primary: #FFFFFF;
+  --bg-elevated: #F5F5F7;
+  --bg-card: #EFEFF2;
+  --bg-hover: rgba(0, 0, 0, 0.045);
+  --bg-active: rgba(0, 0, 0, 0.08);
+  --bg-sidebar: rgba(245, 245, 247, 0.8);
+  --bg-glass: rgba(255, 255, 255, 0.8);
+  --bg-popover: rgba(255, 255, 255, 0.94);
+
+  --text-primary: #1D1D1F;
+  --text-secondary: #6E6E73;
+  --text-tertiary: #98989D;
+
+  --border-hairline: rgba(0, 0, 0, 0.06);
+  --border-subtle: rgba(0, 0, 0, 0.12);
+
+  --solid-bg: #1D1D1F;
+  --solid-fg: #FFFFFF;
+  --solid-hover: #000000;
+
+  --slider-track: rgba(0, 0, 0, 0.12);
+  --slider-fill: #1D1D1F;
+  --scrollbar-thumb: rgba(0, 0, 0, 0.26);
+  --shadow-capsule: 0 16px 40px rgba(0, 0, 0, 0.12), 0 1px 0 rgba(255, 255, 255, 0.7) inset;
+  --shadow-popover: 0 16px 36px rgba(0, 0, 0, 0.14);
+  --shadow-artwork: 0 16px 32px rgba(0, 0, 0, 0.14);
+  --shadow-stage-playing: 0 34px 80px rgba(0, 0, 0, 0.24), 0 8px 20px rgba(0, 0, 0, 0.12);
+  --shadow-stage-paused: 0 14px 30px rgba(0, 0, 0, 0.12);
+
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family:
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "SF Pro Display",
+    "Segoe UI",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background-color: var(--solid-bg);
+  color: var(--solid-fg);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.chrome-no-select {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.glass-surface {
+  background: var(--bg-glass);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+}
+
+.sidebar-glass {
+  background: var(--bg-sidebar);
+  backdrop-filter: blur(24px) saturate(150%);
+  -webkit-backdrop-filter: blur(24px) saturate(150%);
+}
+
+.popover-glass {
+  background: var(--bg-popover);
+  backdrop-filter: blur(28px) saturate(160%);
+  -webkit-backdrop-filter: blur(28px) saturate(160%);
+  box-shadow: var(--shadow-popover);
+}
+
+.ease-apple {
+  transition-timing-function: var(--ease-apple);
+}
+
+/* Legacy scrollbar fallback only when standard scrollbar-color is unsupported */
+@supports not (scrollbar-color: auto) {
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+}
+
+/* Accessible Apple-style slim range slider that expands cleanly on hover */
+.apple-slider-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 16px;
+}
+
+.apple-slider-track {
+  position: relative;
+  width: 100%;
+  height: 3px;
+  border-radius: 999px;
+  background-color: var(--slider-track);
+  overflow: hidden;
+  transition: height 180ms var(--ease-apple);
+}
+
+.apple-slider-wrap:hover .apple-slider-track,
+.apple-slider-wrap:focus-within .apple-slider-track {
+  height: 5px;
+}
+
+.apple-slider-fill {
+  height: 100%;
+  border-radius: 999px;
+  background-color: var(--slider-fill);
+  transition: width 80ms linear;
+}
+
+.apple-slider-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.apple-slider-input:focus-visible {
+  outline: 1px solid var(--text-secondary);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+.apple-slider-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  background: var(--solid-bg);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  transform: scale(0.75);
+  transition:
+    opacity 160ms var(--ease-apple),
+    transform 160ms var(--ease-apple);
+}
+
+.apple-slider-wrap:hover .apple-slider-input::-webkit-slider-thumb,
+.apple-slider-wrap:focus-within .apple-slider-input::-webkit-slider-thumb {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Minimal monochrome equalizer bars for the active track */
+@keyframes eqPulse {
+  0%,
+  100% {
+    transform: scaleY(0.28);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.eq-bar {
+  width: 2px;
+  height: 12px;
+  border-radius: 999px;
+  background-color: var(--text-primary);
+  transform-origin: bottom;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .eq-bar {
+    animation: eqPulse 0.9s var(--ease-apple) infinite;
+  }
+  .eq-bar:nth-child(2) {
+    animation-delay: 0.2s;
+  }
+  .eq-bar:nth-child(3) {
+    animation-delay: 0.42s;
+  }
+}
+
+.eq-paused .eq-bar {
+  animation-play-state: paused;
+  transform: scaleY(0.35);
+}
+
+/* ============================================================================
+   Motion Choreography (Compositor-only: transform & opacity)
+   ============================================================================ */
+
+@keyframes viewEnter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes artworkReveal {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes staggerRise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes trackSlideNext {
+  from {
+    opacity: 0;
+    transform: translateX(26px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes trackSlidePrev {
+  from {
+    opacity: 0;
+    transform: translateX(-26px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes trackTextNext {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes trackTextPrev {
+  from {
+    opacity: 0;
+    transform: translateX(-14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes playPulseRing {
+  0% {
+    opacity: 0.45;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.65);
+  }
+}
+
+@keyframes iconPop {
+  0% {
+    opacity: 0.35;
+    transform: scale(0.72);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes nudgeRight {
+  0% {
+    transform: translateX(0);
+  }
+  40% {
+    transform: translateX(4px);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@keyframes nudgeLeft {
+  0% {
+    transform: translateX(0);
+  }
+  40% {
+    transform: translateX(-4px);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@keyframes popoverEnter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes stageBackdropIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .anim-view-enter {
+    animation: viewEnter 340ms var(--ease-apple) both;
+  }
+
+  .anim-artwork-reveal {
+    animation: artworkReveal 460ms var(--ease-apple) both;
+  }
+
+  .anim-stagger-1 {
+    animation: staggerRise 380ms var(--ease-apple) 40ms both;
+  }
+
+  .anim-stagger-2 {
+    animation: staggerRise 420ms var(--ease-apple) 90ms both;
+  }
+
+  .anim-stagger-3 {
+    animation: staggerRise 420ms var(--ease-apple) 145ms both;
+  }
+
+  .anim-stagger-4 {
+    animation: staggerRise 420ms var(--ease-apple) 200ms both;
+  }
+
+  .anim-track-next {
+    animation: trackSlideNext 420ms var(--ease-apple) both;
+  }
+
+  .anim-track-prev {
+    animation: trackSlidePrev 420ms var(--ease-apple) both;
+  }
+
+  .anim-text-next {
+    animation: trackTextNext 340ms var(--ease-apple) both;
+  }
+
+  .anim-text-prev {
+    animation: trackTextPrev 340ms var(--ease-apple) both;
+  }
+
+  .anim-play-ring {
+    animation: playPulseRing 520ms var(--ease-apple) forwards;
+  }
+
+  .anim-icon-pop {
+    animation: iconPop 220ms var(--ease-spring) both;
+  }
+
+  .anim-nudge-right {
+    animation: nudgeRight 260ms var(--ease-apple);
+  }
+
+  .anim-nudge-left {
+    animation: nudgeLeft 260ms var(--ease-apple);
+  }
+
+  .anim-popover-enter {
+    transform-origin: bottom right;
+    animation: popoverEnter 220ms var(--ease-apple) both;
+  }
+
+  .anim-stage-backdrop {
+    animation: stageBackdropIn 360ms var(--ease-apple) both;
+  }
+}
+
+html[data-window="notch"],
+html[data-window="notch"] body,
+html[data-window="notch"] #root {
+  background: transparent !important;
+  overflow: hidden !important;
+}
+
+/* ============================================================================
+   Disruptive Kinetic Animations: Water-Drop Ripple (Play) & Micro-Tremor (Stop)
+   ============================================================================ */
+
+/* Falling water droplet that splashes into concentric liquid ripples on Play */
+@keyframes waterDropFall {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -24px) scale(0.45, 0.8);
+  }
+  28% {
+    opacity: 0.95;
+    transform: translate(-50%, -4px) scale(0.82, 1.28);
+  }
+  46% {
+    opacity: 0.85;
+    transform: translate(-50%, 0px) scale(1.25, 0.65);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 0px) scale(1.9, 0.25);
+  }
+}
+
+@keyframes waterRippleWave {
+  0% {
+    opacity: 0.62;
+    transform: scale(0.85);
+  }
+  45% {
+    opacity: 0.34;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.75);
+  }
+}
+
+@keyframes artworkLiquidBloom {
+  0% {
+    opacity: 0.55;
+    transform: scale(0.96);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.26);
+  }
+}
+
+/* Kinetic Haptic Micro-Tremor on Pause / Stop */
+@keyframes kineticTremor {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  14% {
+    transform: translate3d(-4.5px, 0.5px, 0) rotate(-1.1deg);
+  }
+  28% {
+    transform: translate3d(4.5px, -0.5px, 0) rotate(1.1deg);
+  }
+  44% {
+    transform: translate3d(-3px, 0, 0) rotate(-0.7deg);
+  }
+  60% {
+    transform: translate3d(2.5px, 0, 0) rotate(0.55deg);
+  }
+  76% {
+    transform: translate3d(-1.2px, 0, 0) rotate(-0.25deg);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+}
+
+@keyframes capsuleTremor {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  18% {
+    transform: translate3d(-3px, 0, 0);
+  }
+  36% {
+    transform: translate3d(3px, 0, 0);
+  }
+  56% {
+    transform: translate3d(-1.8px, 0, 0);
+  }
+  76% {
+    transform: translate3d(1.2px, 0, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes stopContractRing {
+  0% {
+    opacity: 0.55;
+    transform: scale(1.6);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.88);
+  }
+}
+
+@keyframes heartBurst {
+  0% {
+    transform: scale(0.6);
+  }
+  45% {
+    transform: scale(1.32);
+  }
+  75% {
+    transform: scale(0.92);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes contextMenuPop {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes toastSlideIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -12px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+@keyframes notchBreathe {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.95);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
+/* Organic balloon inflation anchored to the top-center screen bezel */
+@keyframes balloonInflate {
+  0% {
+    transform: scale3d(0.84, 0.78, 1);
+  }
+  52% {
+    transform: scale3d(1.035, 1.045, 1);
+  }
+  78% {
+    transform: scale3d(0.992, 0.992, 1);
+  }
+  100% {
+    transform: scale3d(1, 1, 1);
+  }
+}
+
+@keyframes balloonContentBloom {
+  0% {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.93);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .anim-water-drop {
+    animation: waterDropFall 560ms var(--ease-apple) forwards;
+  }
+
+  .anim-water-ripple-1 {
+    animation: waterRippleWave 720ms var(--ease-apple) 90ms forwards;
+  }
+
+  .anim-water-ripple-2 {
+    animation: waterRippleWave 840ms var(--ease-apple) 200ms forwards;
+  }
+
+  .anim-water-ripple-3 {
+    animation: waterRippleWave 960ms var(--ease-apple) 310ms forwards;
+  }
+
+  .anim-artwork-liquid {
+    animation: artworkLiquidBloom 860ms var(--ease-apple) forwards;
+  }
+
+  .anim-kinetic-tremor {
+    animation: kineticTremor 420ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+  }
+
+  .anim-capsule-tremor {
+    animation: capsuleTremor 380ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+  }
+
+  .anim-stop-contract {
+    animation: stopContractRing 360ms var(--ease-apple) forwards;
+  }
+
+  .anim-heart-burst {
+    animation: heartBurst 420ms var(--ease-spring) both;
+  }
+
+  .anim-context-menu {
+    transform-origin: top left;
+    animation: contextMenuPop 190ms var(--ease-apple) both;
+  }
+
+  .anim-toast-in {
+    animation: toastSlideIn 260ms var(--ease-apple) both;
+  }
+
+  .anim-notch-breathe {
+    animation: notchBreathe 2.4s ease-in-out infinite;
+  }
+
+  .anim-balloon-inflate {
+    transform-origin: top center;
+    animation: balloonInflate 540ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .anim-balloon-content {
+    animation: balloonContentBloom 380ms cubic-bezier(0.22, 1, 0.36, 1) 90ms both;
+  }
+
+  /* Velvety symmetrical Apple-style hover zoom for playlist items & cards */
+  .playlist-row-zoom {
+    will-change: transform;
+    transition:
+      transform 380ms var(--ease-apple),
+      background-color 220ms var(--ease-apple),
+      color 220ms var(--ease-apple);
+  }
+
+  .playlist-row-zoom:hover {
+    transform: scale(1.022);
+  }
+
+  .playlist-row-zoom:active {
+    transform: scale(0.99);
+    transition-duration: 140ms;
+  }
+
+  .playlist-card-zoom {
+    will-change: transform;
+    transition:
+      transform 420ms var(--ease-apple),
+      border-color 260ms var(--ease-apple),
+      box-shadow 420ms var(--ease-apple);
+  }
+
+  .playlist-card-zoom:hover {
+    transform: translateY(-2px) scale(1.028);
+  }
+
+  .playlist-card-zoom:active {
+    transform: scale(0.992);
+    transition-duration: 150ms;
+  }
+
+  .playlist-cover-zoom img {
+    transition:
+      transform 520ms var(--ease-apple),
+      opacity 300ms var(--ease-apple);
+  }
+
+  .group:hover .playlist-cover-zoom img {
+    transform: scale(1.06);
+  }
+}
+
+/* ============================================================================
+   Shared-Element View Transitions (PlayerBar Capsule <-> Now Playing Stage)
+   ============================================================================ */
+
+::view-transition-group(now-playing-cover) {
+  animation-duration: 480ms;
+  animation-timing-function: var(--ease-apple);
+  z-index: 60;
+}
+
+::view-transition-old(now-playing-cover),
+::view-transition-new(now-playing-cover) {
+  height: 100%;
+  width: 100%;
+  object-fit: cover;
+  border-radius: 16px;
+}
+
+::view-transition-group(now-playing-title),
+::view-transition-group(now-playing-artist) {
+  animation-duration: 440ms;
+  animation-timing-function: var(--ease-apple);
+  z-index: 61;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 320ms;
+  animation-timing-function: var(--ease-apple);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
