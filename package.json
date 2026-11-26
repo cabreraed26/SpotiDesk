@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "bundle:macos": "bash scripts/build-macos.sh",
+    "bundle:macos:universal": "bash scripts/build-macos.sh --universal",
+    "bundle:windows": "powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.28",

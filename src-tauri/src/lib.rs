@@ -5,8 +5,79 @@ mod shortcuts;
 mod tray;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{AppHandle, Manager, State, WindowEvent};
+use tauri::{AppHandle, Manager, State, WebviewWindow, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+
+#[cfg(target_os = "macos")]
+fn apply_main_window_corners(window: &WebviewWindow) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSColor, NSWindow};
+    use objc2_quartz_core::kCACornerCurveContinuous;
+
+    let is_maximized = window.is_maximized().unwrap_or(false);
+    let is_fullscreen = window.is_fullscreen().unwrap_or(false);
+    let radius: f64 = if is_maximized || is_fullscreen { 0.0 } else { 16.0 };
+
+    let apply = move |win: &WebviewWindow| {
+        if let Ok(ptr) = win.ns_window() {
+            let ns_win: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+            ns_win.setOpaque(false);
+            ns_win.setBackgroundColor(Some(&NSColor::clearColor()));
+            if let Some(content_view) = ns_win.contentView() {
+                content_view.setWantsLayer(true);
+                if let Some(layer) = content_view.layer() {
+                    layer.setCornerRadius(radius);
+                    layer.setMasksToBounds(true);
+                    layer.setBackgroundColor(None);
+                    unsafe {
+                        layer.setCornerCurve(kCACornerCurveContinuous);
+                    }
+                }
+            }
+            ns_win.invalidateShadow();
+        }
+    };
+
+    if MainThreadMarker::new().is_some() {
+        apply(window);
+    } else {
+        let win_clone = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            apply(&win_clone);
+        });
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_main_window_corners(window: &WebviewWindow) {
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmSetWindowAttribute(
+            hwnd: isize,
+            dw_attribute: u32,
+            pv_attribute: *const std::ffi::c_void,
+            cb_attribute: u32,
+        ) -> i32;
+    }
+
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+    const DWMWCP_ROUND: u32 = 2;
+
+    if let Ok(hwnd) = window.hwnd() {
+        let preference = DWMWCP_ROUND;
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                hwnd.0 as isize,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &preference as *const u32 as *const std::ffi::c_void,
+                std::mem::size_of::<u32>() as u32,
+            );
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn apply_main_window_corners(_window: &WebviewWindow) {}
 
 pub struct AppSettingsState {
     close_to_tray: AtomicBool,
@@ -68,9 +139,13 @@ pub fn run() {
         .manage(auth::AuthState::new())
         .manage(AppSettingsState::new())
         .manage(discord::DiscordState::new())
+        .manage(notch::NotchState::new())
         .setup(|app| {
             tray::setup_tray(app)?;
             shortcuts::register_media_shortcuts(app);
+            if let Some(main_win) = app.get_webview_window("main") {
+                apply_main_window_corners(&main_win);
+            }
             if let Err(err) = notch::create_notch_window(app.handle()) {
                 eprintln!("[SpotiDesk] No se pudo crear la ventana Notch: {err}");
             }
@@ -79,6 +154,12 @@ pub fn run() {
         .on_window_event(|window, event| {
             if window.label() == "main" {
                 match event {
+                    WindowEvent::Resized(_) => {
+                        #[cfg(target_os = "macos")]
+                        if let Some(main_win) = window.app_handle().get_webview_window("main") {
+                            apply_main_window_corners(&main_win);
+                        }
+                    }
                     WindowEvent::CloseRequested { api, .. } => {
                         let close_to_tray = window
                             .app_handle()
@@ -119,6 +200,8 @@ pub fn run() {
             auth::logout_spotify,
             notch::toggle_notch,
             notch::get_notch_visible,
+            notch::get_notch_layout,
+            notch::set_notch_position,
             notch::send_notch_state,
             notch::send_notch_action,
             get_close_to_tray,

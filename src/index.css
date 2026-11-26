@@ -648,6 +648,98 @@ html[data-window="notch"] #root {
   }
 }
 
+/* Organic horizontal balloon inflation anchored to left/right screen edge */
+@keyframes balloonInflateSide {
+  0% {
+    transform: scale3d(0.8, 0.88, 1);
+  }
+  52% {
+    transform: scale3d(1.035, 1.025, 1);
+  }
+  78% {
+    transform: scale3d(0.992, 0.994, 1);
+  }
+  100% {
+    transform: scale3d(1, 1, 1);
+  }
+}
+
+/* Branded customizable <select> with graceful native fallback */
+.apple-select {
+  min-width: 126px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition:
+    border-color 180ms var(--ease-apple),
+    background-color 180ms var(--ease-apple);
+}
+
+.apple-select:hover {
+  background-color: var(--bg-hover);
+}
+
+.apple-select:focus-visible {
+  outline: none;
+  border-color: var(--text-primary);
+}
+
+@supports (appearance: base-select) {
+  .apple-select,
+  .apple-select::picker(select) {
+    appearance: base-select;
+  }
+
+  .apple-select {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .apple-select::picker-icon {
+    color: var(--text-secondary);
+    transition: transform 200ms var(--ease-apple);
+  }
+
+  .apple-select:open::picker-icon {
+    transform: rotate(180deg);
+  }
+
+  .apple-select::picker(select) {
+    margin-top: 6px;
+    padding: 4px;
+    border-radius: 12px;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-popover);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-popover);
+  }
+
+  .apple-select option {
+    padding: 6px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+
+  .apple-select option:hover,
+  .apple-select option:focus-visible {
+    background-color: var(--bg-hover);
+  }
+
+  .apple-select option::checkmark {
+    color: var(--text-primary);
+  }
+}
+
 @keyframes balloonContentBloom {
   0% {
     opacity: 0;
@@ -712,6 +804,16 @@ html[data-window="notch"] #root {
   .anim-balloon-inflate {
     transform-origin: top center;
     animation: balloonInflate 540ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .anim-balloon-inflate-left {
+    transform-origin: left center;
+    animation: balloonInflateSide 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .anim-balloon-inflate-right {
+    transform-origin: right center;
+    animation: balloonInflateSide 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
   .anim-balloon-content {

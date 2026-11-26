@@ -2,18 +2,23 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { LogOut, X } from "lucide-react";
 import type { ThemeMode } from "../hooks/useTheme";
+import type { NotchPosition } from "./DesktopNotch";
 import { SpotiDeskLogo } from "./SpotiDeskLogo";
 
 interface SettingsModalProps {
   theme: ThemeMode;
   ambientEnabled: boolean;
+  autoplayEnabled: boolean;
   notchVisible: boolean;
+  notchPosition: NotchPosition;
   closeToTray: boolean;
   discordEnabled: boolean;
   discordClientId: string;
   onToggleTheme: () => void;
   onToggleAmbient: () => void;
+  onToggleAutoplay: (enabled: boolean) => void;
   onToggleNotch: () => void;
+  onChangeNotchPosition: (position: NotchPosition) => void;
   onToggleCloseToTray: (enabled: boolean) => void;
   onToggleDiscord: (enabled: boolean) => void;
   onChangeDiscordClientId: (clientId: string) => void;
@@ -58,19 +63,25 @@ function AppleSwitch({
 export function SettingsModal({
   theme,
   ambientEnabled,
+  autoplayEnabled,
   notchVisible,
+  notchPosition,
   closeToTray,
   discordEnabled,
   discordClientId,
   onToggleTheme,
   onToggleAmbient,
+  onToggleAutoplay,
   onToggleNotch,
+  onChangeNotchPosition,
   onToggleCloseToTray,
   onToggleDiscord,
   onChangeDiscordClientId,
   onLogout,
   onClose,
 }: SettingsModalProps) {
+  const isMac = /mac/i.test(navigator.platform || navigator.userAgent);
+  const osLabel = isMac ? "macOS" : "Windows";
   const [autostart, setAutostart] = useState(false);
   const [autostartLoading, setAutostartLoading] = useState(true);
   const [autostartError, setAutostartError] = useState<string | null>(null);
@@ -135,6 +146,31 @@ export function SettingsModal({
 
         {/* Body */}
         <div className="p-6 space-y-6 max-h-[72vh] overflow-y-auto">
+          {/* Playback */}
+          <section className="space-y-3">
+            <h3 className="text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--text-tertiary)]">
+              Reproducción
+            </h3>
+
+            <div className="rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-elevated)]/70 divide-y divide-[var(--border-hairline)]">
+              <div className="px-4 py-3 flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-[13px] font-medium text-[var(--text-primary)]">
+                    Reproducción automática
+                  </div>
+                  <div className="text-[11.5px] text-[var(--text-secondary)]">
+                    Continúa con canciones similares cuando no queden pistas en cola
+                  </div>
+                </div>
+                <AppleSwitch
+                  checked={autoplayEnabled}
+                  onChange={() => onToggleAutoplay(!autoplayEnabled)}
+                  label="Activar reproducción automática"
+                />
+              </div>
+            </div>
+          </section>
+
           {/* Appearance */}
           <section className="space-y-3">
             <h3 className="text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--text-tertiary)]">
@@ -176,27 +212,54 @@ export function SettingsModal({
             </div>
           </section>
 
-          {/* Windows Integration */}
+          {/* System Integration */}
           <section className="space-y-3">
             <h3 className="text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--text-tertiary)]">
-              Integración con Windows
+              Integración con {osLabel}
             </h3>
 
             <div className="rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-elevated)]/70 divide-y divide-[var(--border-hairline)]">
               <div className="px-4 py-3 flex items-center justify-between gap-4">
                 <div>
                   <div className="text-[13px] font-medium text-[var(--text-primary)]">
-                    Notch superior dinámico
+                    Notch dinámico
                   </div>
                   <div className="text-[11.5px] text-[var(--text-secondary)]">
-                    Cápsula flotante siempre visible arriba
+                    Cápsula flotante siempre visible en el borde de la pantalla
                   </div>
                 </div>
                 <AppleSwitch
                   checked={notchVisible}
                   onChange={onToggleNotch}
-                  label="Alternar Notch superior"
+                  label="Alternar Notch dinámico"
                 />
+              </div>
+
+              <div className="px-4 py-3 flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <label
+                    htmlFor="notch-position-select"
+                    className="block text-[13px] font-medium text-[var(--text-primary)]"
+                  >
+                    Posición del Notch
+                  </label>
+                  <div className="text-[11.5px] text-[var(--text-secondary)]">
+                    {isMac
+                      ? "Superior se sobrepone al notch de macOS"
+                      : "Elige en qué borde mostrar el Notch"}
+                  </div>
+                </div>
+                <select
+                  id="notch-position-select"
+                  name="notch-position"
+                  value={notchPosition}
+                  onChange={(e) => onChangeNotchPosition(e.target.value as NotchPosition)}
+                  className="apple-select shrink-0"
+                >
+                  <option value="top">Superior</option>
+                  <option value="left">Izquierda</option>
+                  <option value="right">Derecha</option>
+                </select>
               </div>
 
               <div className="px-4 py-3 flex items-center justify-between gap-4">
@@ -218,7 +281,7 @@ export function SettingsModal({
               <div className="px-4 py-3 flex items-center justify-between gap-4">
                 <div>
                   <div className="text-[13px] font-medium text-[var(--text-primary)]">
-                    Iniciar con Windows
+                    Iniciar con {osLabel}
                   </div>
                   <div className="text-[11.5px] text-[var(--text-secondary)]">
                     Abrir SpotiDesk automáticamente al iniciar sesión
@@ -228,7 +291,7 @@ export function SettingsModal({
                   checked={autostart}
                   disabled={autostartLoading}
                   onChange={() => void handleToggleAutostart()}
-                  label="Iniciar con Windows"
+                  label={`Iniciar con ${osLabel}`}
                 />
               </div>
             </div>
@@ -302,9 +365,9 @@ export function SettingsModal({
               <span className="text-right font-mono text-[11px] text-[var(--text-primary)]">F</span>
               <span className="text-[var(--text-secondary)]">Buscar música</span>
               <span className="text-right font-mono text-[11px] text-[var(--text-primary)]">
-                Ctrl + K
+                {isMac ? "Cmd + K" : "Ctrl + K"}
               </span>
-              <span className="text-[var(--text-secondary)]">Control global Windows</span>
+              <span className="text-[var(--text-secondary)]">Control global {osLabel}</span>
               <span className="text-right font-mono text-[11px] text-[var(--text-primary)]">
                 Teclas Media
               </span>

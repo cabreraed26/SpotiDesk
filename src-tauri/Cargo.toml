@@ -27,6 +27,14 @@ base64 = "0.22"
 rand = "0.8"
 url = "2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen", "NSResponder", "NSView", "NSColor"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSArray", "NSString", "NSValue", "NSDictionary"] }
+objc2-core-foundation = { version = "0.3", features = ["CFCGTypes"] }
+objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
+
 [profile.release]
 codegen-units = 1
 lto = true

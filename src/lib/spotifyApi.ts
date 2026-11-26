@@ -215,6 +215,108 @@ export class SpotifyApiClient {
     );
   }
 
+  async searchTracks(query: string, limit = 10): Promise<SpotifyTrack[]> {
+    const trimmed = query.trim();
+    if (!trimmed) return [];
+    const q = encodeURIComponent(trimmed);
+    const safeLimit = Math.max(1, Math.min(limit, 10));
+    const data = await this.request<{ tracks?: SpotifyPaging<SpotifyTrack> }>(
+      `/search?q=${q}&type=track&limit=${safeLimit}`
+    );
+    return (data?.tracks?.items ?? []).filter((t): t is SpotifyTrack => Boolean(t && t.uri));
+  }
+
+  /**
+   * Discovers fresh related tracks for seamless endless Autoplay when the queue runs out.
+   * Uses search + saved library fallback so it remains reliable under Spotify 2026 Dev Mode.
+   */
+  async getAutoplayTracks(
+    seed: { uri: string; name: string; artists: string },
+    excludeUris: Set<string>,
+    count = 12
+  ): Promise<SpotifyTrack[]> {
+    const normalizeTitle = (s: string) =>
+      s
+        .toLowerCase()
+        .replace(/\s*\([^)]*\)/g, "")
+        .replace(/\s*-\s*(remaster|live|acoustic|remix|radio edit|version).*$/i, "")
+        .trim();
+
+    const seedTitleNorm = normalizeTitle(seed.name);
+    const artistList = seed.artists
+      .split(",")
+      .map((a) => a.trim())
+      .filter(Boolean);
+    const primaryArtist = artistList[0] ?? "";
+    const secondaryArtist = artistList[1] ?? "";
+
+    const queries: string[] = [];
+    if (primaryArtist) {
+      queries.push(`artist:"${primaryArtist}"`);
+      if (secondaryArtist) {
+        queries.push(`artist:"${secondaryArtist}"`);
+      } else {
+        queries.push(primaryArtist);
+      }
+    } else if (seed.name.trim()) {
+      queries.push(seed.name.trim());
+    }
+
+    const searchResults = await Promise.allSettled(
+      queries.map((q) => this.searchTracks(q, 10))
+    );
+
+    const pool: SpotifyTrack[] = [];
+    for (const res of searchResults) {
+      if (res.status === "fulfilled") {
+        pool.push(...res.value);
+      }
+    }
+
+    const seenUris = new Set<string>([...excludeUris, seed.uri]);
+    const seenTitles = new Set<string>([seedTitleNorm]);
+    const unique: SpotifyTrack[] = [];
+
+    const addCandidate = (t: SpotifyTrack) => {
+      if (!t?.uri || seenUris.has(t.uri)) return;
+      const norm = normalizeTitle(t.name);
+      if (norm && seenTitles.has(norm)) return;
+      seenUris.add(t.uri);
+      if (norm) seenTitles.add(norm);
+      unique.push(t);
+    };
+
+    pool.forEach(addCandidate);
+
+    // Fallback to user's Liked Songs if search yielded too few fresh candidates
+    if (unique.length < 4) {
+      try {
+        const firstPage = await this.getSavedTracks(20, 0);
+        const total = firstPage.total ?? 0;
+        let savedItems = firstPage.items ?? [];
+        if (total > 20) {
+          const randOffset = Math.floor(Math.random() * Math.max(1, total - 20));
+          const randPage = await this.getSavedTracks(20, randOffset);
+          savedItems = [...(randPage.items ?? []), ...savedItems];
+        }
+        savedItems
+          .map((entry) => entry?.item ?? entry?.track)
+          .filter((t): t is SpotifyTrack => Boolean(t && t.uri))
+          .forEach(addCandidate);
+      } catch {
+        // Ignore fallback failure
+      }
+    }
+
+    // Fisher-Yates shuffle for variety
+    for (let i = unique.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [unique[i], unique[j]] = [unique[j], unique[i]];
+    }
+
+    return unique.slice(0, count);
+  }
+
   async getDevices(): Promise<SpotifyDevice[]> {
     const data = await this.request<{ devices: SpotifyDevice[] }>("/me/player/devices");
     return data?.devices ?? [];

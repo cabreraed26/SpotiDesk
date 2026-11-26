@@ -16,6 +16,16 @@ import { formatDuration } from "../lib/format";
 import { LazyCover } from "./LazyCover";
 import { PlayWaterDropEffect, StopShockEffect } from "./KineticEffects";
 
+export type NotchPosition = "top" | "left" | "right";
+
+export interface NotchLayoutPayload {
+  position: NotchPosition;
+  isMacos: boolean;
+  hasHardwareNotch: boolean;
+  notchWidth: number;
+  notchHeight: number;
+}
+
 export interface NotchStatePayload {
   track: UnifiedTrack | null;
   isPlaying: boolean;
@@ -36,6 +46,16 @@ function readSavedTheme(): ThemeMode {
   return "dark";
 }
 
+function readSavedNotchPosition(): NotchPosition {
+  try {
+    const saved = localStorage.getItem("spotidesk.notch_position");
+    if (saved === "left" || saved === "right" || saved === "top") return saved;
+  } catch {
+    // Ignore storage errors
+  }
+  return "top";
+}
+
 export function DesktopNotch() {
   const [state, setState] = useState<NotchStatePayload>(() => ({
     track: null,
@@ -45,6 +65,14 @@ export function DesktopNotch() {
     theme: readSavedTheme(),
     ambientRgb: null,
     isLiked: false,
+  }));
+
+  const [layout, setLayout] = useState<NotchLayoutPayload>(() => ({
+    position: readSavedNotchPosition(),
+    isMacos: /mac/i.test(navigator.platform || navigator.userAgent),
+    hasHardwareNotch: false,
+    notchWidth: 0,
+    notchHeight: 0,
   }));
 
   const [isExpanded, setIsExpanded] = useState(false);
@@ -57,13 +85,42 @@ export function DesktopNotch() {
 
   const prevPlayingRef = useRef<boolean | null>(null);
   const hasSyncedStateRef = useRef(false);
+  const lastPointerActionAtRef = useRef(0);
+
+  // When overlaid on macOS physical black hardware notch, always render in dark obsidian
+  // palette so the island merges seamlessly with the black camera bezel.
+  const isMacHardwareTop =
+    layout.isMacos && layout.position === "top" && layout.hasHardwareNotch;
+  const effectiveTheme: ThemeMode = isMacHardwareTop ? "dark" : state.theme;
 
   useEffect(() => {
     document.documentElement.dataset.window = "notch";
-    document.documentElement.dataset.theme = state.theme;
-  }, [state.theme]);
+    document.documentElement.dataset.theme = effectiveTheme;
+  }, [effectiveTheme]);
 
-  // Listen to native Win32 cursor tracking from Rust (zero HWND resize, zero stuck states)
+  // Sync Notch layout & macOS hardware notch metrics from Rust
+  useEffect(() => {
+    void invoke<NotchLayoutPayload>("get_notch_layout")
+      .then((initial) => {
+        if (initial) setLayout(initial);
+      })
+      .catch(() => {});
+
+    let unlistenLayout: (() => void) | undefined;
+    void listen<NotchLayoutPayload>("notch-layout", (event) => {
+      if (event.payload) {
+        setLayout(event.payload);
+      }
+    }).then((fn) => {
+      unlistenLayout = fn;
+    });
+
+    return () => {
+      unlistenLayout?.();
+    };
+  }, []);
+
+  // Listen to native cursor tracking from Rust (zero resize flashes, zero stuck states)
   useEffect(() => {
     let unlistenHover: (() => void) | undefined;
     void listen<boolean>("notch-hover", (event) => {
@@ -81,7 +138,7 @@ export function DesktopNotch() {
     };
   }, []);
 
-  // Listen to real-time playback updates from the main SpotyFast window
+  // Listen to real-time playback updates from the main SpotiDesk window
   useEffect(() => {
     let unlisten: (() => void) | undefined;
 
@@ -112,9 +169,10 @@ export function DesktopNotch() {
     };
   }, []);
 
-  // Lightweight local progress interpolation while inflated & playing
+  // Lightweight local progress interpolation while playing (expanded or side pill)
+  const isSide = layout.position === "left" || layout.position === "right";
   useEffect(() => {
-    if (!state.isPlaying || !isExpanded) return;
+    if (!state.isPlaying || (!isExpanded && !isSide)) return;
     let last = performance.now();
     const timer = window.setInterval(() => {
       const now = performance.now();
@@ -125,7 +183,7 @@ export function DesktopNotch() {
       );
     }, 300);
     return () => window.clearInterval(timer);
-  }, [state.isPlaying, state.durationMs, isExpanded]);
+  }, [state.isPlaying, state.durationMs, isExpanded, isSide]);
 
   const sendAction = (action: string) => {
     void invoke("send_notch_action", { action });
@@ -137,6 +195,12 @@ export function DesktopNotch() {
   ) => {
     if (e.button !== 0) return;
     e.preventDefault();
+    lastPointerActionAtRef.current = performance.now();
+    cb();
+  };
+
+  const handleClickFallback = (cb: () => void) => {
+    if (performance.now() - lastPointerActionAtRef.current < 350) return;
     cb();
   };
 
@@ -153,97 +217,261 @@ export function DesktopNotch() {
   const progressPct =
     state.durationMs > 0 ? Math.min(100, (livePosition / state.durationMs) * 100) : 0;
 
+  // Compute geometry per platform & position
+  const hwNotchWidth = Math.max(150, layout.notchWidth || 186);
+  const hwNotchHeight = Math.max(32, layout.notchHeight || 34);
+  const hwWingWidth = 28;
+
+  let collapsedWidth = 148;
+  let collapsedHeight = 34;
+  let expandedWidth = 368;
+  let expandedHeight = 158;
+  let collapsedRadius = "0 0 16px 16px";
+  let expandedRadius = "0 0 28px 28px";
+  let transformOrigin = "top center";
+  let borderClasses = "border-x border-b border-[var(--border-subtle)]";
+  let containerAlign = "items-start justify-center";
+  let inflateClass = "anim-balloon-inflate";
+  let expandedTopPad = 14;
+
+  if (layout.position === "left") {
+    collapsedWidth = 30;
+    collapsedHeight = 100;
+    expandedWidth = 368;
+    expandedHeight = 158;
+    collapsedRadius = "0 15px 15px 0";
+    expandedRadius = "0 28px 28px 0";
+    transformOrigin = "left center";
+    borderClasses = "border-y border-r border-[var(--border-subtle)]";
+    containerAlign = "items-center justify-start";
+    inflateClass = "anim-balloon-inflate-left";
+  } else if (layout.position === "right") {
+    collapsedWidth = 30;
+    collapsedHeight = 100;
+    expandedWidth = 368;
+    expandedHeight = 158;
+    collapsedRadius = "15px 0 0 15px";
+    expandedRadius = "28px 0 0 28px";
+    transformOrigin = "right center";
+    borderClasses = "border-y border-l border-[var(--border-subtle)]";
+    containerAlign = "items-center justify-end";
+    inflateClass = "anim-balloon-inflate-right";
+  } else if (isMacHardwareTop) {
+    collapsedWidth = hwNotchWidth + hwWingWidth * 2;
+    collapsedHeight = hwNotchHeight;
+    expandedWidth = 384;
+    expandedHeight = hwNotchHeight + 150;
+    collapsedRadius = "0 0 13px 13px";
+    expandedRadius = "0 0 28px 28px";
+    transformOrigin = "top center";
+    borderClasses = isExpanded
+      ? "border-x border-b border-white/10"
+      : "border-x border-b border-transparent";
+    containerAlign = "items-start justify-center";
+    inflateClass = "anim-balloon-inflate";
+    expandedTopPad = hwNotchHeight + 6;
+  } else if (layout.isMacos && layout.position === "top") {
+    // Non-notch macOS display: compact pill flush against top bezel over the menu bar
+    collapsedWidth = 148;
+    collapsedHeight = Math.max(28, Math.min(layout.notchHeight || 32, 34));
+    expandedWidth = 368;
+    expandedHeight = 158;
+    collapsedRadius = "0 0 15px 15px";
+    expandedRadius = "0 0 28px 28px";
+  }
+
+  const shellBackground = isMacHardwareTop
+    ? "#000000"
+    : effectiveTheme === "dark"
+      ? "rgba(8, 8, 10, 0.95)"
+      : "rgba(255, 255, 255, 0.96)";
+
+  const shellShadow = "none";
+
   return (
-    <div className="chrome-no-select w-full h-full flex items-start justify-center bg-transparent select-none">
-      {/* Top-Center Apple Dynamic Island Notch inflating smoothly downward like a balloon */}
+    <div
+      className={`chrome-no-select w-full h-full flex ${containerAlign} bg-transparent select-none`}
+    >
+      {/* Dynamic Island Notch inflating smoothly from its anchored screen edge */}
       <div
-        className={`relative overflow-hidden border-x border-b border-[var(--border-subtle)] ${
-          isExpanded && inflateAnimKey > 0 ? "anim-balloon-inflate" : ""
+        className={`relative overflow-hidden ${borderClasses} ${
+          isExpanded && inflateAnimKey > 0 ? inflateClass : ""
         } ${tremorKey > 0 && !state.isPlaying ? "anim-capsule-tremor" : ""}`}
         style={{
-          width: isExpanded ? "368px" : "196px",
-          height: isExpanded ? "158px" : "36px",
-          borderRadius: isExpanded ? "0 0 28px 28px" : "0 0 18px 18px",
-          transformOrigin: "top center",
-          background:
-            state.theme === "dark"
-              ? "rgba(8, 8, 10, 0.95)"
-              : "rgba(255, 255, 255, 0.96)",
-          boxShadow: isExpanded
-            ? "0 20px 48px rgba(0, 0, 0, 0.52), 0 -1px 0 rgba(255,255,255,0.06) inset"
-            : "0 8px 20px rgba(0, 0, 0, 0.34)",
+          width: `${isExpanded ? expandedWidth : collapsedWidth}px`,
+          height: `${isExpanded ? expandedHeight : collapsedHeight}px`,
+          borderRadius: isExpanded ? expandedRadius : collapsedRadius,
+          transformOrigin,
+          background: shellBackground,
+          boxShadow: shellShadow,
           transition: isExpanded
             ? "width 500ms cubic-bezier(0.34, 1.38, 0.54, 1), height 500ms cubic-bezier(0.34, 1.38, 0.54, 1), border-radius 460ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 420ms cubic-bezier(0.22, 1, 0.36, 1)"
             : "width 380ms cubic-bezier(0.32, 0.72, 0, 1), height 380ms cubic-bezier(0.32, 0.72, 0, 1), border-radius 340ms cubic-bezier(0.32, 0.72, 0, 1), box-shadow 320ms cubic-bezier(0.32, 0.72, 0, 1)",
         }}
       >
-        {/* Subtle ambient glow from active track cover */}
-        {state.ambientRgb && (
+        {/* Collapsed Pill — varies cleanly between macOS hardware-notch wings, vertical side tab, and horizontal bar */}
+        {isMacHardwareTop ? (
           <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0 transition-opacity duration-500"
+            aria-hidden={isExpanded}
+            className="absolute inset-0 flex items-center justify-between transition-all duration-200 ease-apple"
             style={{
-              opacity: isExpanded ? 1 : 0.4,
-              background: `radial-gradient(280px circle at 50% 0%, rgba(${state.ambientRgb}, ${
-                state.theme === "dark" ? 0.28 : 0.16
-              }), transparent 72%)`,
+              opacity: isExpanded ? 0 : 1,
+              transform: isExpanded ? "scale(0.9)" : "scale(1)",
+              pointerEvents: "none",
             }}
-          />
+          >
+            {/* Left ear next to physical MacBook camera notch */}
+            <div
+              className="flex items-center justify-center shrink-0"
+              style={{ width: `${hwWingWidth}px` }}
+            >
+              <div className="relative">
+                {state.track?.albumImage ? (
+                  <LazyCover
+                    src={state.track.albumImage}
+                    alt={state.track.name}
+                    className="w-[18px] h-[18px]"
+                    iconSize={10}
+                    roundedClass="rounded-[5px]"
+                  />
+                ) : (
+                  <div className="w-[18px] h-[18px] rounded-[5px] bg-white/10 flex items-center justify-center">
+                    <Disc3 size={10} strokeWidth={1.6} className="text-white/70" />
+                  </div>
+                )}
+                <PlayWaterDropEffect triggerKey={waterKey} size="sm" />
+              </div>
+            </div>
+
+            {/* Physical MacBook notch cutout spacer */}
+            <div style={{ width: `${hwNotchWidth}px` }} className="shrink-0" />
+
+            {/* Right ear next to physical MacBook camera notch */}
+            <div
+              className="flex items-center justify-center shrink-0"
+              style={{ width: `${hwWingWidth}px` }}
+            >
+              {state.track ? (
+                <div
+                  className={`flex items-end gap-[2px] h-2.5 ${
+                    state.isPlaying ? "" : "eq-paused"
+                  }`}
+                >
+                  <span className="eq-bar" />
+                  <span className="eq-bar" />
+                  <span className="eq-bar" />
+                </div>
+              ) : (
+                <span className="w-1.5 h-1.5 rounded-full bg-white/45 anim-notch-breathe" />
+              )}
+            </div>
+          </div>
+        ) : isSide ? (
+          <div
+            aria-hidden={isExpanded}
+            className="absolute inset-0 py-2.5 flex flex-col items-center justify-between transition-all duration-200 ease-apple"
+            style={{
+              opacity: isExpanded ? 0 : 1,
+              transform: isExpanded ? "scale(0.84)" : "scale(1)",
+              pointerEvents: "none",
+            }}
+          >
+            <div className="relative shrink-0">
+              {state.track?.albumImage ? (
+                <LazyCover
+                  src={state.track.albumImage}
+                  alt={state.track.name}
+                  className="w-[18px] h-[18px]"
+                  iconSize={10}
+                  roundedClass="rounded-[5px]"
+                />
+              ) : (
+                <div className="w-[18px] h-[18px] rounded-[5px] bg-[var(--bg-card)] border border-[var(--border-hairline)] flex items-center justify-center">
+                  <Disc3 size={10} strokeWidth={1.6} className="text-[var(--text-secondary)]" />
+                </div>
+              )}
+              <PlayWaterDropEffect triggerKey={waterKey} size="sm" />
+            </div>
+
+            {/* Subtle vertical playback progress bar */}
+            <div className="w-[2.5px] h-6 rounded-full bg-[var(--slider-track)] overflow-hidden flex flex-col justify-end">
+              <div
+                className="w-full rounded-full bg-[var(--slider-fill)] transition-all duration-300"
+                style={{ height: `${state.track ? Math.max(8, progressPct) : 0}%` }}
+              />
+            </div>
+
+            {state.track ? (
+              <div
+                className={`shrink-0 flex items-end gap-[2px] h-2.5 ${
+                  state.isPlaying ? "" : "eq-paused"
+                }`}
+              >
+                <span className="eq-bar" />
+                <span className="eq-bar" />
+                <span className="eq-bar" />
+              </div>
+            ) : (
+              <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-[var(--text-tertiary)] anim-notch-breathe" />
+            )}
+          </div>
+        ) : (
+          <div
+            aria-hidden={isExpanded}
+            className="absolute inset-0 px-2.5 flex items-center justify-between gap-2 transition-all duration-200 ease-apple"
+            style={{
+              opacity: isExpanded ? 0 : 1,
+              transform: isExpanded ? "scale(0.84)" : "scale(1)",
+              pointerEvents: "none",
+            }}
+          >
+            <div className="relative shrink-0">
+              {state.track?.albumImage ? (
+                <LazyCover
+                  src={state.track.albumImage}
+                  alt={state.track.name}
+                  className="w-[18px] h-[18px]"
+                  iconSize={10}
+                  roundedClass="rounded-[5px]"
+                />
+              ) : (
+                <div className="w-[18px] h-[18px] rounded-[5px] bg-[var(--bg-card)] border border-[var(--border-hairline)] flex items-center justify-center">
+                  <Disc3 size={10} strokeWidth={1.6} className="text-[var(--text-secondary)]" />
+                </div>
+              )}
+              <PlayWaterDropEffect triggerKey={waterKey} size="sm" />
+            </div>
+
+            <span className="text-[11px] font-medium tracking-[-0.01em] text-[var(--text-primary)] truncate flex-1 text-center">
+              {state.track?.name || "SpotiDesk"}
+            </span>
+
+            {state.track ? (
+              <div
+                className={`shrink-0 flex items-end gap-[2px] h-2.5 ${
+                  state.isPlaying ? "" : "eq-paused"
+                }`}
+              >
+                <span className="eq-bar" />
+                <span className="eq-bar" />
+                <span className="eq-bar" />
+              </div>
+            ) : (
+              <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-[var(--text-tertiary)] anim-notch-breathe" />
+            )}
+          </div>
         )}
 
-        {/* Collapsed Top Dynamic Island Pill (horizontal mini bar) */}
-        <div
-          aria-hidden={isExpanded}
-          className="absolute inset-0 px-3 flex items-center justify-between gap-2.5 transition-all duration-200 ease-apple"
-          style={{
-            opacity: isExpanded ? 0 : 1,
-            transform: isExpanded ? "scale(0.84)" : "scale(1)",
-            pointerEvents: "none",
-          }}
-        >
-          <div className="relative shrink-0">
-            {state.track?.albumImage ? (
-              <LazyCover
-                src={state.track.albumImage}
-                alt={state.track.name}
-                className="w-5 h-5"
-                iconSize={11}
-                roundedClass="rounded-md"
-              />
-            ) : (
-              <div className="w-5 h-5 rounded-md bg-[var(--bg-card)] border border-[var(--border-hairline)] flex items-center justify-center">
-                <Disc3 size={11} strokeWidth={1.6} className="text-[var(--text-secondary)]" />
-              </div>
-            )}
-            <PlayWaterDropEffect triggerKey={waterKey} size="sm" />
-          </div>
-
-          <span className="text-[11px] font-medium tracking-[-0.01em] text-[var(--text-primary)] truncate flex-1 text-center">
-            {state.track?.name || "SpotiDesk"}
-          </span>
-
-          {state.track ? (
-            <div
-              className={`shrink-0 flex items-end gap-[2px] h-2.5 ${
-                state.isPlaying ? "" : "eq-paused"
-              }`}
-            >
-              <span className="eq-bar" />
-              <span className="eq-bar" />
-              <span className="eq-bar" />
-            </div>
-          ) : (
-            <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-[var(--text-tertiary)] anim-notch-breathe" />
-          )}
-        </div>
-
-        {/* Expanded Dynamic Island Content (blooms smoothly downward during inflation) */}
+        {/* Expanded Dynamic Island Content (clears the macOS physical camera cutout automatically) */}
         <div
           aria-hidden={!isExpanded}
-          className={`relative z-10 w-[368px] h-[158px] px-4 py-3.5 flex flex-col justify-between transition-all duration-250 ease-apple ${
+          className={`relative z-10 px-4 pb-3.5 flex flex-col justify-between transition-all duration-250 ease-apple ${
             isExpanded ? "anim-balloon-content" : ""
           }`}
           style={{
+            width: `${expandedWidth}px`,
+            height: `${expandedHeight}px`,
+            paddingTop: `${expandedTopPad}px`,
             opacity: isExpanded ? 1 : 0,
             transform: isExpanded ? "scale(1)" : "scale(0.9)",
             pointerEvents: isExpanded ? "auto" : "none",
@@ -283,6 +511,7 @@ export function DesktopNotch() {
             <button
               type="button"
               onPointerDown={(e) => handlePrimaryPointerDown(e, () => sendAction("open-main"))}
+              onClick={() => handleClickFallback(() => sendAction("open-main"))}
               onKeyDown={(e) => handleKeyActivate(e, () => sendAction("open-main"))}
               title="Abrir SpotiDesk"
               aria-label="Abrir ventana principal de SpotiDesk"
@@ -319,6 +548,13 @@ export function DesktopNotch() {
                   sendAction("previous");
                 })
               }
+              onClick={() =>
+                handleClickFallback(() => {
+                  setSkipNudge("prev");
+                  window.setTimeout(() => setSkipNudge(null), 260);
+                  sendAction("previous");
+                })
+              }
               onKeyDown={(e) =>
                 handleKeyActivate(e, () => {
                   setSkipNudge("prev");
@@ -340,6 +576,7 @@ export function DesktopNotch() {
               onPointerDown={(e) =>
                 handlePrimaryPointerDown(e, () => sendAction("play-pause"))
               }
+              onClick={() => handleClickFallback(() => sendAction("play-pause"))}
               onKeyDown={(e) =>
                 handleKeyActivate(e, () => sendAction("play-pause"))
               }
@@ -374,6 +611,13 @@ export function DesktopNotch() {
                   sendAction("next");
                 })
               }
+              onClick={() =>
+                handleClickFallback(() => {
+                  setSkipNudge("next");
+                  window.setTimeout(() => setSkipNudge(null), 260);
+                  sendAction("next");
+                })
+              }
               onKeyDown={(e) =>
                 handleKeyActivate(e, () => {
                   setSkipNudge("next");
@@ -395,6 +639,12 @@ export function DesktopNotch() {
               disabled={!state.track}
               onPointerDown={(e) =>
                 handlePrimaryPointerDown(e, () => {
+                  setHeartKey((k) => k + 1);
+                  sendAction("toggle-like");
+                })
+              }
+              onClick={() =>
+                handleClickFallback(() => {
                   setHeartKey((k) => k + 1);
                   sendAction("toggle-like");
                 })

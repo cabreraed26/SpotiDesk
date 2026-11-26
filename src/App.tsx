@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Loader2, X } from "lucide-react";
 import { useSpotifyAuth } from "./hooks/useSpotifyAuth";
 import { useSpotifyPlayer } from "./hooks/useSpotifyPlayer";
@@ -24,11 +25,23 @@ import { Toast, type ToastMessage } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SpotifyApiError } from "./lib/spotifyApi";
 import type { SpotifyPlaylist, UnifiedTrack } from "./types/spotify";
-import type { NotchStatePayload } from "./components/DesktopNotch";
+import type { NotchPosition, NotchStatePayload } from "./components/DesktopNotch";
 
 const CLOSE_TO_TRAY_KEY = "spotidesk.close_to_tray";
+const NOTCH_POSITION_KEY = "spotidesk.notch_position";
+const AUTOPLAY_ENABLED_KEY = "spotidesk.autoplay_enabled";
 const DISCORD_ENABLED_KEY = "spotidesk.discord_enabled";
 const DISCORD_CLIENT_ID_KEY = "spotidesk.discord_client_id";
+
+function readInitialNotchPosition(): NotchPosition {
+  try {
+    const saved = localStorage.getItem(NOTCH_POSITION_KEY);
+    if (saved === "top" || saved === "left" || saved === "right") return saved;
+  } catch {
+    // Ignore
+  }
+  return "top";
+}
 
 function readInitialDiscordClientId(): string {
   const fromEnv = (import.meta.env.VITE_DISCORD_CLIENT_ID as string | undefined)?.trim();
@@ -43,10 +56,40 @@ function readInitialDiscordClientId(): string {
 export function App() {
   const { theme, toggleTheme, ambientEnabled, toggleAmbient } = useTheme();
   const auth = useSpotifyAuth();
+
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+
+  const showToast = useCallback(
+    (text: string, tone: "default" | "warning" = "default", durationMs = 2600) => {
+      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+      setToast({ id: Date.now(), text, tone });
+      toastTimerRef.current = window.setTimeout(() => {
+        setToast(null);
+      }, durationMs);
+    },
+    []
+  );
+
+  const [autoplayEnabled, setAutoplayEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(AUTOPLAY_ENABLED_KEY);
+      return saved === null ? true : saved === "true";
+    } catch {
+      return true;
+    }
+  });
+
+  const handleAutoplayTriggered = useCallback(() => {
+    showToast("Reproducción automática: continuando con música similar");
+  }, [showToast]);
+
   const player = useSpotifyPlayer({
     isAuthenticated: auth.isAuthenticated,
     getFreshToken: auth.getFreshToken,
     api: auth.api,
+    autoplayEnabled,
+    onAutoplayTriggered: handleAutoplayTriggered,
   });
 
   const [activeView, setActiveView] = useState<AppView>({ kind: "home" });
@@ -58,9 +101,11 @@ export function App() {
   const [isCreatePlaylistOpen, setIsCreatePlaylistOpen] = useState(false);
   const [trackDir, setTrackDir] = useState<TrackTransitionDir>("next");
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
   const [isCurrentLiked, setIsCurrentLiked] = useState(false);
   const [notchVisible, setNotchVisible] = useState(true);
+  const [notchPosition, setNotchPositionState] = useState<NotchPosition>(readInitialNotchPosition);
+  const [isWindowMaximized, setIsWindowMaximized] = useState(false);
+  const isMac = /mac/i.test(navigator.platform || navigator.userAgent);
   const [discordClientId, setDiscordClientIdState] = useState<string>(readInitialDiscordClientId);
   const [discordEnabled, setDiscordEnabled] = useState<boolean>(() => {
     try {
@@ -79,19 +124,6 @@ export function App() {
       return true;
     }
   });
-
-  const toastTimerRef = useRef<number | null>(null);
-
-  const showToast = useCallback(
-    (text: string, tone: "default" | "warning" = "default", durationMs = 2600) => {
-      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-      setToast({ id: Date.now(), text, tone });
-      toastTimerRef.current = window.setTimeout(() => {
-        setToast(null);
-      }, durationMs);
-    },
-    []
-  );
 
   const ambientRgb = useAmbientColor(
     player.currentTrack?.albumImage,
@@ -126,6 +158,14 @@ export function App() {
       // Ignore
     }
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(AUTOPLAY_ENABLED_KEY, String(autoplayEnabled));
+    } catch {
+      // Ignore
+    }
+  }, [autoplayEnabled]);
 
   useEffect(() => {
     try {
@@ -209,6 +249,55 @@ export function App() {
       cancelled = true;
     };
   }, [auth.api, auth.isAuthenticated, player.currentTrack]);
+
+  // Track maximized / fullscreen state so rounded window corners flatten cleanly edge-to-edge
+  useEffect(() => {
+    const win = getCurrentWindow();
+    let unlisten: (() => void) | undefined;
+
+    const syncWindowState = async () => {
+      try {
+        const [max, full] = await Promise.all([win.isMaximized(), win.isFullscreen()]);
+        setIsWindowMaximized(max || full);
+      } catch {
+        // Ignore
+      }
+    };
+
+    void syncWindowState();
+    void win
+      .onResized(() => {
+        void syncWindowState();
+      })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  // Sync saved Notch position with Rust backend on boot & whenever changed
+  useEffect(() => {
+    void invoke("set_notch_position", { position: notchPosition }).catch(() => {});
+    try {
+      localStorage.setItem(NOTCH_POSITION_KEY, notchPosition);
+    } catch {
+      // Ignore storage errors
+    }
+  }, [notchPosition]);
+
+  const handleChangeNotchPosition = useCallback(
+    (position: NotchPosition) => {
+      setNotchPositionState(position);
+      const label =
+        position === "left" ? "izquierda" : position === "right" ? "derecha" : "superior";
+      showToast(`Posición del Notch: ${label}`);
+    },
+    [showToast]
+  );
 
   // Sync Notch visibility status on mount & from tray menu
   useEffect(() => {
@@ -545,8 +634,24 @@ export function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [auth.isAuthenticated, isSettingsOpen, isStageOpen, player, setStageWithTransition]);
 
+  const windowRadiusClass = isWindowMaximized
+    ? "rounded-none"
+    : isMac
+      ? "rounded-[16px]"
+      : "rounded-[8px]";
+
   return (
-    <div className="h-screen w-screen flex flex-col bg-[var(--bg-primary)] text-[var(--text-primary)] overflow-hidden relative">
+    <div
+      className={`h-screen w-screen flex flex-col bg-[var(--bg-primary)] text-[var(--text-primary)] overflow-hidden relative ${windowRadiusClass}`}
+    >
+      {/* Crisp subtle window rim matching native rounded corners when windowed */}
+      {!isWindowMaximized && (
+        <div
+          aria-hidden="true"
+          className={`pointer-events-none fixed inset-0 z-[60] border border-[var(--border-subtle)] ${windowRadiusClass}`}
+        />
+      )}
+
       {/* Optional ultra-subtle ambient glow derived from current album cover */}
       {ambientRgb && (
         <div
@@ -579,13 +684,17 @@ export function App() {
         <SettingsModal
           theme={theme}
           ambientEnabled={ambientEnabled}
+          autoplayEnabled={autoplayEnabled}
           notchVisible={notchVisible}
+          notchPosition={notchPosition}
           closeToTray={closeToTray}
           discordEnabled={discordEnabled}
           discordClientId={discordClientId}
           onToggleTheme={toggleTheme}
           onToggleAmbient={toggleAmbient}
+          onToggleAutoplay={setAutoplayEnabled}
           onToggleNotch={() => void handleToggleNotch()}
+          onChangeNotchPosition={handleChangeNotchPosition}
           onToggleCloseToTray={setCloseToTray}
           onToggleDiscord={setDiscordEnabled}
           onChangeDiscordClientId={setDiscordClientId}

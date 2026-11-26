@@ -136,6 +136,9 @@ export interface SpotifyPlaybackStateResponse {
   shuffle_state: boolean;
   is_playing: boolean;
   progress_ms: number | null;
+  context?: {
+    uri: string | null;
+  } | null;
   item: SpotifyTrack | null;
 }
 

@@ -18,6 +18,9 @@ pub fn toggle_main_window(app: &AppHandle) {
 }
 
 pub fn show_main_window(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.show();
+
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
