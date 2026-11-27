@@ -161,6 +161,11 @@ export function SpotlightWindow() {
       if (e.payload) setState(e.payload);
     }).then((fn) => {
       unlistenState = fn;
+      // Pull authoritative state immediately on lazy first-mount so playlists/devices appear right away
+      void invoke("request_spotlight_state").catch(() => {});
+      window.requestAnimationFrame(() => {
+        inputRef.current?.focus();
+      });
     });
 
     void listen("spotlight-opened", () => {

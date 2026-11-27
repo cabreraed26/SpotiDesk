@@ -191,6 +191,11 @@ pub fn show_main_window(app: AppHandle) {
 }
 
 #[tauri::command]
+pub fn request_spotlight_state(app: AppHandle) {
+    let _ = app.emit_to("main", "spotlight-request-state", ());
+}
+
+#[tauri::command]
 pub fn send_spotlight_state(app: AppHandle, payload: Value) {
     let _ = app.emit_to(SPOTLIGHT_LABEL, "spotlight-state", payload);
 }

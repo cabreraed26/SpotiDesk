@@ -649,9 +649,7 @@ pub fn run() {
             if let Err(err) = notch::create_notch_window(app.handle()) {
                 eprintln!("[SpotiDesk] No se pudo crear la ventana Notch: {err}");
             }
-            if let Err(err) = spotlight::create_spotlight_window(app.handle()) {
-                eprintln!("[SpotiDesk] No se pudo crear la ventana Spotlight: {err}");
-            }
+            // Spotlight window is created lazily on first shortcut/tray trigger to keep idle RAM minimal
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -724,6 +722,7 @@ pub fn run() {
             notch::send_notch_action,
             spotlight::hide_spotlight,
             spotlight::show_main_window,
+            spotlight::request_spotlight_state,
             spotlight::send_spotlight_state,
             spotlight::send_spotlight_action,
             shortcuts::set_spotlight_shortcut,
