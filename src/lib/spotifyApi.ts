@@ -28,7 +28,7 @@ export class SpotifyApiError extends Error {
 }
 
 export const DEV_MODE_USER_NOT_ALLOWED_MSG =
-  "Tu cuenta de Spotify no está autorizada para este Client ID (Error 403). Pide al creador que te agregue en «User Management» del Spotify Developer Dashboard, o pulsa «Cambiar Client ID» para usar uno propio.";
+  "Esta cuenta de Spotify no tiene permiso en este Client ID (Error 403). Si alguien te compartió la app, pídele que añada tu correo de Spotify en «Settings → User Management» de su panel de Spotify, o pulsa «Cambiar Client ID» para crear el tuyo propio en 1 minuto.";
 
 function isDevModeUnregistered403(status: number, rawText: string, endpoint: string): boolean {
   if (status !== 403) return false;

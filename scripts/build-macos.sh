@@ -4,8 +4,9 @@ set -euo pipefail
 # ==============================================================================
 # SpotiDesk — Generador de bundles para macOS (Instalador .dmg + Portable .app/.zip)
 # Uso:
-#   bash scripts/build-macos.sh              # Arquitectura nativa (Apple Silicon o Intel)
-#   bash scripts/build-macos.sh --universal  # Binario Universal (Apple Silicon + Intel)
+#   bash scripts/build-macos.sh                      # Arquitectura nativa (usa .env si existe)
+#   bash scripts/build-macos.sh --public             # Build público sin Client ID embebido
+#   bash scripts/build-macos.sh --universal --public # Universal público (Apple Silicon + Intel)
 # ==============================================================================
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,13 +25,17 @@ for cmd in pnpm cargo node ditto; do
 done
 
 UNIVERSAL=false
+PUBLIC_BUILD=false
 for arg in "$@"; do
   case "$arg" in
     --universal)
       UNIVERSAL=true
       ;;
+    --public)
+      PUBLIC_BUILD=true
+      ;;
     -h|--help)
-      echo "Uso: bash scripts/build-macos.sh [--universal]"
+      echo "Uso: bash scripts/build-macos.sh [--universal] [--public]"
       exit 0
       ;;
     *)
@@ -39,6 +44,13 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+BUILD_SUFFIX=""
+if [[ "$PUBLIC_BUILD" == true ]]; then
+  export SPOTIDESK_PUBLIC_BUILD=1
+  export VITE_SPOTIFY_CLIENT_ID=""
+  BUILD_SUFFIX="_public"
+fi
 
 PRODUCT_NAME="$(node -e 'const c = require("./src-tauri/tauri.conf.json"); console.log(c.productName || "SpotiDesk");')"
 VERSION="$(node -e 'const c = require("./src-tauri/tauri.conf.json"); console.log(c.version || "0.0.0");')"
@@ -72,7 +84,11 @@ OUT_DIR="$ROOT_DIR/releases/macos"
 PORTABLE_DIR="$OUT_DIR/portable"
 
 echo "============================================================"
-echo "  Compilando $PRODUCT_NAME v$VERSION para macOS ($ARCH_LABEL)"
+if [[ "$PUBLIC_BUILD" == true ]]; then
+  echo "  Compilando $PRODUCT_NAME v$VERSION para macOS ($ARCH_LABEL · PÚBLICO sin Client ID)"
+else
+  echo "  Compilando $PRODUCT_NAME v$VERSION para macOS ($ARCH_LABEL)"
+fi
 echo "============================================================"
 
 if [[ ! -d "$ROOT_DIR/node_modules" ]]; then
@@ -100,14 +116,14 @@ mkdir -p "$PORTABLE_DIR"
 echo "Empaquetando versión portable..."
 ditto "$APP_SRC" "$PORTABLE_DIR/${PRODUCT_NAME}.app"
 
-PORTABLE_ZIP="$OUT_DIR/${PRODUCT_NAME}_${VERSION}_macos_${ARCH_LABEL}_portable.zip"
+PORTABLE_ZIP="$OUT_DIR/${PRODUCT_NAME}_${VERSION}_macos_${ARCH_LABEL}${BUILD_SUFFIX}_portable.zip"
 rm -f "$PORTABLE_ZIP"
 ditto -c -k --sequesterRsrc --keepParent "$APP_SRC" "$PORTABLE_ZIP"
 
 # 2. Instalador (.dmg)
 echo "Copiando instalador .dmg..."
 DMG_SRC="$(find "$BUNDLE_DIR/dmg" -maxdepth 1 -name '*.dmg' 2>/dev/null | head -n 1 || true)"
-DMG_OUT="$OUT_DIR/${PRODUCT_NAME}_${VERSION}_macos_${ARCH_LABEL}_installer.dmg"
+DMG_OUT="$OUT_DIR/${PRODUCT_NAME}_${VERSION}_macos_${ARCH_LABEL}${BUILD_SUFFIX}_installer.dmg"
 rm -f "$DMG_OUT"
 
 if [[ -n "$DMG_SRC" && -f "$DMG_SRC" ]]; then

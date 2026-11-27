@@ -20,7 +20,7 @@ import { VirtualizedTrackList } from "./VirtualizedTrackList";
 
 export type CollectionTarget =
   | { kind: "liked" }
-  | { kind: "playlist"; id: string }
+  | { kind: "playlist"; id: string; seedPlaylist?: SpotifyPlaylist }
   | { kind: "album"; id: string; seedAlbum?: SpotifyAlbumSimple };
 
 interface CollectionMeta {
@@ -31,6 +31,7 @@ interface CollectionMeta {
   year?: string;
   description?: string;
   coverUrl?: string;
+  placeholderCoverUrl?: string;
   contextUri?: string;
   totalTracks: number;
   isLiked?: boolean;
@@ -77,38 +78,154 @@ function buildAlbumMeta(album: SpotifyAlbumSimple, fallbackTrackCount = 0): Coll
     albumArtists: album.artists ?? [],
     year,
     coverUrl: getBestImage(album.images, "large"),
+    placeholderCoverUrl:
+      getBestImage(album.images, "medium") ?? getBestImage(album.images, "small"),
     contextUri: album.uri,
     totalTracks: album.total_tracks ?? fallbackTrackCount,
   };
 }
 
-function resolveInitialAlbumState(target: CollectionTarget): {
+function buildPlaylistMeta(
+  playlist: SpotifyPlaylist,
+  fallbackTrackCount = 0
+): CollectionMeta {
+  return {
+    badge: "PLAYLIST",
+    title: playlist.name,
+    subtitle: playlist.owner?.display_name || "Spotify",
+    description: playlist.description || undefined,
+    coverUrl: getBestImage(playlist.images, "large"),
+    placeholderCoverUrl:
+      getBestImage(playlist.images, "medium") ?? getBestImage(playlist.images, "small"),
+    contextUri: playlist.uri,
+    totalTracks: getPlaylistTrackCount(playlist) || fallbackTrackCount,
+  };
+}
+
+function buildLikedMeta(totalTracks = 0): CollectionMeta {
+  return {
+    badge: "BIBLIOTECA",
+    title: "Tus Me Gusta",
+    subtitle: "Colección personal",
+    totalTracks,
+    isLiked: true,
+  };
+}
+
+function resolveInitialCollectionState(
+  target: CollectionTarget,
+  cachedPlaylist?: SpotifyPlaylist
+): {
   meta: CollectionMeta | null;
   tracks: UnifiedTrack[];
+  offset: number;
+  hasMore: boolean;
+  isRestricted: boolean;
   isLoading: boolean;
   isTracksLoading: boolean;
+  hasFullCache: boolean;
 } {
-  if (target.kind !== "album") {
-    return { meta: null, tracks: [], isLoading: true, isTracksLoading: false };
-  }
-  const cached = viewCache.getAlbum(target.id);
-  if (cached) {
+  if (target.kind === "album") {
+    const cached = viewCache.getAlbum(target.id);
+    if (cached) {
+      return {
+        meta: buildAlbumMeta(cached.album, cached.tracks.length),
+        tracks: cached.tracks,
+        offset: cached.tracks.length,
+        hasMore: false,
+        isRestricted: false,
+        isLoading: false,
+        isTracksLoading: false,
+        hasFullCache: true,
+      };
+    }
+    if (target.seedAlbum) {
+      return {
+        meta: buildAlbumMeta(target.seedAlbum),
+        tracks: [],
+        offset: 0,
+        hasMore: false,
+        isRestricted: false,
+        isLoading: false,
+        isTracksLoading: true,
+        hasFullCache: false,
+      };
+    }
     return {
-      meta: buildAlbumMeta(cached.album, cached.tracks.length),
-      tracks: cached.tracks,
+      meta: null,
+      tracks: [],
+      offset: 0,
+      hasMore: false,
+      isRestricted: false,
+      isLoading: true,
+      isTracksLoading: false,
+      hasFullCache: false,
+    };
+  }
+
+  if (target.kind === "playlist") {
+    const cached = viewCache.getPlaylist(target.id);
+    if (cached) {
+      return {
+        meta: buildPlaylistMeta(cached.playlist, cached.tracks.length),
+        tracks: cached.tracks,
+        offset: cached.offset,
+        hasMore: cached.hasMore,
+        isRestricted: cached.isRestricted,
+        isLoading: false,
+        isTracksLoading: false,
+        hasFullCache: true,
+      };
+    }
+    const seed = target.seedPlaylist ?? cachedPlaylist;
+    if (seed) {
+      return {
+        meta: buildPlaylistMeta(seed),
+        tracks: [],
+        offset: 0,
+        hasMore: false,
+        isRestricted: false,
+        isLoading: false,
+        isTracksLoading: true,
+        hasFullCache: false,
+      };
+    }
+    return {
+      meta: null,
+      tracks: [],
+      offset: 0,
+      hasMore: false,
+      isRestricted: false,
+      isLoading: true,
+      isTracksLoading: false,
+      hasFullCache: false,
+    };
+  }
+
+  // target.kind === "liked" — always render editorial header at 0ms!
+  const cachedLiked = viewCache.likedTracks;
+  if (cachedLiked) {
+    return {
+      meta: buildLikedMeta(cachedLiked.total),
+      tracks: cachedLiked.tracks,
+      offset: cachedLiked.offset,
+      hasMore: cachedLiked.hasMore,
+      isRestricted: false,
       isLoading: false,
       isTracksLoading: false,
+      hasFullCache: true,
     };
   }
-  if (target.seedAlbum) {
-    return {
-      meta: buildAlbumMeta(target.seedAlbum),
-      tracks: [],
-      isLoading: false,
-      isTracksLoading: true,
-    };
-  }
-  return { meta: null, tracks: [], isLoading: true, isTracksLoading: false };
+  return {
+    meta: buildLikedMeta(0),
+    tracks: [],
+    offset: 0,
+    hasMore: false,
+    isRestricted: false,
+    isLoading: false,
+    isTracksLoading: true,
+    hasFullCache: false,
+  };
 }
 
 function extractPlaylistTracks(entries: SpotifyPlaylistTrackItem[] | undefined): UnifiedTrack[] {
@@ -137,17 +254,19 @@ export function CollectionView({
   onTrackContextMenu,
   onRestrictedPlaylist,
 }: CollectionViewProps) {
-  const initial = resolveInitialAlbumState(target);
+  const initial = resolveInitialCollectionState(target, cachedPlaylist);
   const [meta, setMeta] = useState<CollectionMeta | null>(() => initial.meta);
   const [tracks, setTracks] = useState<UnifiedTrack[]>(() => initial.tracks);
   const [isLoading, setIsLoading] = useState<boolean>(() => initial.isLoading);
   const [isTracksLoading, setIsTracksLoading] = useState<boolean>(() => initial.isTracksLoading);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
-  const [isRestrictedPlaylist, setIsRestrictedPlaylist] = useState(false);
+  const [hasMore, setHasMore] = useState<boolean>(() => initial.hasMore);
+  const [isRestrictedPlaylist, setIsRestrictedPlaylist] = useState<boolean>(
+    () => initial.isRestricted
+  );
   const [error, setError] = useState<string | null>(null);
 
-  const offsetRef = useRef(0);
+  const offsetRef = useRef(initial.offset);
   const targetRef = useRef(target);
   targetRef.current = target;
   const cachedPlaylistRef = useRef<SpotifyPlaylist | undefined>(cachedPlaylist);
@@ -157,27 +276,20 @@ export function CollectionView({
 
   const targetKey = target.kind === "liked" ? "liked" : `${target.kind}:${target.id}`;
 
-  // Initial load for the selected collection
+  // Initial load + silent SWR revalidation for the selected collection
   useEffect(() => {
     let cancelled = false;
     const currentTarget = targetRef.current;
-    offsetRef.current = 0;
-    setError(null);
-    setIsRestrictedPlaylist(false);
-    setHasMore(false);
+    const snap = resolveInitialCollectionState(currentTarget, cachedPlaylistRef.current);
 
-    if (currentTarget.kind === "album") {
-      const snap = resolveInitialAlbumState(currentTarget);
-      setMeta(snap.meta);
-      setTracks(snap.tracks);
-      setIsLoading(snap.isLoading);
-      setIsTracksLoading(snap.isTracksLoading);
-    } else {
-      setIsLoading(true);
-      setIsTracksLoading(false);
-      setTracks([]);
-      setMeta(null);
-    }
+    offsetRef.current = snap.offset;
+    setError(null);
+    setMeta(snap.meta);
+    setTracks(snap.tracks);
+    setHasMore(snap.hasMore);
+    setIsRestrictedPlaylist(snap.isRestricted);
+    setIsLoading(snap.isLoading);
+    setIsTracksLoading(snap.isTracksLoading);
 
     (async () => {
       try {
@@ -188,18 +300,23 @@ export function CollectionView({
             .map((entry) => entry?.item ?? entry?.track)
             .filter((t): t is NonNullable<typeof t> => Boolean(t && t.uri))
             .map((t) => normalizeTrack(t));
-          setMeta({
-            badge: "BIBLIOTECA",
-            title: "Tus Me Gusta",
-            subtitle: "Colección personal",
-            totalTracks: page.total ?? items.length,
-            isLiked: true,
-          });
+          const total = page.total ?? items.length;
+          const nextOffset = (page.items ?? []).length;
+          const nextMore = Boolean(page.next);
+
+          setMeta(buildLikedMeta(total));
           setTracks(items);
-          offsetRef.current = (page.items ?? []).length;
-          setHasMore(Boolean(page.next));
+          offsetRef.current = nextOffset;
+          setHasMore(nextMore);
+          viewCache.likedTracks = {
+            tracks: items,
+            total,
+            offset: nextOffset,
+            hasMore: nextMore,
+          };
         } else if (currentTarget.kind === "playlist") {
-          let playlist: SpotifyPlaylist | undefined = cachedPlaylistRef.current;
+          let playlist: SpotifyPlaylist | undefined =
+            currentTarget.seedPlaylist ?? cachedPlaylistRef.current;
 
           try {
             playlist = await api.getPlaylist(currentTarget.id);
@@ -210,31 +327,38 @@ export function CollectionView({
           if (cancelled) return;
 
           if (!playlist) {
-            setError("No se pudo obtener la información de esta playlist.");
+            if (!snap.hasFullCache) {
+              setError("No se pudo obtener la información de esta playlist.");
+            }
             return;
           }
 
-          setMeta({
-            badge: "PLAYLIST",
-            title: playlist.name,
-            subtitle: playlist.owner?.display_name || "Spotify",
-            description: playlist.description || undefined,
-            coverUrl: getBestImage(playlist.images, "large"),
-            contextUri: playlist.uri,
-            totalTracks: getPlaylistTrackCount(playlist),
-          });
+          setMeta(buildPlaylistMeta(playlist));
 
           // Check if the full playlist payload already embedded its first page of items
           const embeddedItems = (
-            playlist.items as unknown as { items?: SpotifyPlaylistTrackItem[]; next?: string | null; total?: number } | undefined
+            playlist.items as unknown as
+              | { items?: SpotifyPlaylistTrackItem[]; next?: string | null; total?: number }
+              | undefined
           )?.items;
 
           if (Array.isArray(embeddedItems) && embeddedItems.length > 0) {
             const parsed = extractPlaylistTracks(embeddedItems);
-            setTracks(parsed);
-            offsetRef.current = embeddedItems.length;
+            const nextOffset = embeddedItems.length;
             const nextUrl = (playlist.items as unknown as { next?: string | null })?.next;
-            setHasMore(Boolean(nextUrl));
+            const nextMore = Boolean(nextUrl);
+
+            setTracks(parsed);
+            offsetRef.current = nextOffset;
+            setHasMore(nextMore);
+            setIsRestrictedPlaylist(false);
+            viewCache.setPlaylist(currentTarget.id, {
+              playlist,
+              tracks: parsed,
+              offset: nextOffset,
+              hasMore: nextMore,
+              isRestricted: false,
+            });
             return;
           }
 
@@ -242,22 +366,42 @@ export function CollectionView({
             const page = await api.getPlaylistTracks(currentTarget.id, 100, 0);
             if (cancelled) return;
             const parsed = extractPlaylistTracks(page.items);
+            const nextOffset = (page.items ?? []).length;
+            const nextMore = Boolean(page.next);
+
             setTracks(parsed);
-            offsetRef.current = (page.items ?? []).length;
-            setHasMore(Boolean(page.next));
+            offsetRef.current = nextOffset;
+            setHasMore(nextMore);
+            setIsRestrictedPlaylist(false);
             if (page.total) {
               setMeta((prev) =>
                 prev ? { ...prev, totalTracks: prev.totalTracks || page.total } : prev
               );
             }
+            viewCache.setPlaylist(currentTarget.id, {
+              playlist,
+              tracks: parsed,
+              offset: nextOffset,
+              hasMore: nextMore,
+              isRestricted: false,
+            });
           } catch (tracksErr) {
             if (cancelled) return;
             if (tracksErr instanceof SpotifyApiError && tracksErr.status === 403) {
               // Spotify Feb 2026 Dev Mode blocks reading tracks of third-party playlists,
               // but direct playback via context_uri still works!
               setIsRestrictedPlaylist(true);
-              onRestrictedRef.current?.(playlist.name);
-            } else {
+              viewCache.setPlaylist(currentTarget.id, {
+                playlist,
+                tracks: [],
+                offset: 0,
+                hasMore: false,
+                isRestricted: true,
+              });
+              if (!snap.isRestricted) {
+                onRestrictedRef.current?.(playlist.name);
+              }
+            } else if (!snap.hasFullCache) {
               setError(
                 tracksErr instanceof Error
                   ? tracksErr.message
@@ -295,7 +439,7 @@ export function CollectionView({
           viewCache.setAlbum(currentTarget.id, { album, tracks: items });
         }
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && !snap.hasFullCache) {
           setError(err instanceof Error ? err.message : "Error cargando la colección.");
         }
       } finally {
@@ -321,15 +465,42 @@ export function CollectionView({
           .map((entry) => entry?.item ?? entry?.track)
           .filter((t): t is NonNullable<typeof t> => Boolean(t && t.uri))
           .map((t) => normalizeTrack(t));
-        setTracks((prev) => [...prev, ...nextItems]);
-        offsetRef.current += (page.items ?? []).length;
-        setHasMore(Boolean(page.next));
+        const nextOffset = offsetRef.current + (page.items ?? []).length;
+        const nextMore = Boolean(page.next);
+
+        setTracks((prev) => {
+          const merged = [...prev, ...nextItems];
+          viewCache.likedTracks = {
+            tracks: merged,
+            total: page.total ?? merged.length,
+            offset: nextOffset,
+            hasMore: nextMore,
+          };
+          return merged;
+        });
+        offsetRef.current = nextOffset;
+        setHasMore(nextMore);
       } else if (target.kind === "playlist") {
         const page = await api.getPlaylistTracks(target.id, 100, offsetRef.current);
         const nextItems = extractPlaylistTracks(page.items);
-        setTracks((prev) => [...prev, ...nextItems]);
-        offsetRef.current += (page.items ?? []).length;
-        setHasMore(Boolean(page.next));
+        const nextOffset = offsetRef.current + (page.items ?? []).length;
+        const nextMore = Boolean(page.next);
+
+        setTracks((prev) => {
+          const merged = [...prev, ...nextItems];
+          const existing = viewCache.getPlaylist(target.id);
+          if (existing) {
+            viewCache.setPlaylist(target.id, {
+              ...existing,
+              tracks: merged,
+              offset: nextOffset,
+              hasMore: nextMore,
+            });
+          }
+          return merged;
+        });
+        offsetRef.current = nextOffset;
+        setHasMore(nextMore);
       }
     } catch {
       setHasMore(false);
@@ -411,6 +582,7 @@ export function CollectionView({
   }
 
   const isAlbumView = target.kind === "album";
+  const isPlaylistView = target.kind === "playlist";
 
   const headerSlot = (
     <section key={targetKey} className={`${canGoBack ? "pt-5" : "pt-8"} pb-7 space-y-6`}>
@@ -430,7 +602,8 @@ export function CollectionView({
       <div className="flex flex-col sm:flex-row sm:items-end gap-7">
         {meta.isLiked ? (
           <div
-            className="anim-artwork-reveal w-44 h-44 shrink-0 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] flex items-center justify-center"
+            data-liked-hero="liked"
+            className="w-44 h-44 shrink-0 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] flex items-center justify-center"
             style={{ boxShadow: "var(--shadow-artwork)" }}
           >
             <Heart size={48} strokeWidth={1.3} className="text-[var(--text-primary)]" />
@@ -438,15 +611,18 @@ export function CollectionView({
         ) : (
           <div
             data-album-hero={isAlbumView ? target.id : undefined}
-            className={`${isAlbumView ? "" : "anim-artwork-reveal"} shrink-0 rounded-2xl overflow-hidden`}
+            data-playlist-hero={isPlaylistView ? target.id : undefined}
+            className="shrink-0 rounded-2xl overflow-hidden"
             style={{ boxShadow: "var(--shadow-artwork)" }}
           >
             <LazyCover
               src={meta.coverUrl}
+              placeholderSrc={meta.placeholderCoverUrl}
               alt={meta.title}
               className="w-44 h-44"
               iconSize={40}
               roundedClass="rounded-2xl"
+              eager
             />
           </div>
         )}

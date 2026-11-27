@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, RefreshCw, X } from "lucide-react";
+import { RefreshCw, X } from "lucide-react";
 import type { SpotifyApiClient } from "../lib/spotifyApi";
 import type { UnifiedTrack } from "../types/spotify";
 import { formatDuration, normalizeTrack } from "../lib/format";
+import { viewCache } from "../lib/viewCache";
 import { LazyCover } from "./LazyCover";
 import { ArtistLinks } from "./ArtistLinks";
 
@@ -27,20 +28,29 @@ export function QueueDrawer({
   onTrackContextMenu,
   onClose,
 }: QueueDrawerProps) {
-  const [queue, setQueue] = useState<UnifiedTrack[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const fallbackQueue = sdkWindowTracks.filter((t) => t.uri !== currentTrack?.uri);
+  const [queue, setQueue] = useState<UnifiedTrack[]>(
+    () => viewCache.lastQueue ?? fallbackQueue
+  );
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState<boolean>(
+    () => viewCache.lastQueue !== null || fallbackQueue.length > 0
+  );
 
   const loadQueue = useCallback(async () => {
-    setIsLoading(true);
+    setIsRefreshing(true);
     try {
       const data = await api.getQueue();
       const mapped = data.queue.map(normalizeTrack);
       setQueue(mapped);
+      viewCache.lastQueue = mapped;
     } catch {
       // Fallback to live SDK next tracks if /me/player/queue is unavailable
-      setQueue(sdkWindowTracks.filter((t) => t.uri !== currentTrack?.uri));
+      const fallback = sdkWindowTracks.filter((t) => t.uri !== currentTrack?.uri);
+      setQueue(fallback);
     } finally {
-      setIsLoading(false);
+      setIsRefreshing(false);
+      setHasLoadedOnce(true);
     }
   }, [api, currentTrack?.uri, sdkWindowTracks]);
 
@@ -74,7 +84,11 @@ export function QueueDrawer({
             aria-label="Actualizar cola"
             className="w-7 h-7 rounded-lg flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors cursor-pointer"
           >
-            <RefreshCw size={13} strokeWidth={1.5} className={isLoading ? "animate-spin" : ""} />
+            <RefreshCw
+              size={13}
+              strokeWidth={1.5}
+              className={isRefreshing ? "animate-spin" : ""}
+            />
           </button>
           <button
             type="button"
@@ -148,9 +162,17 @@ export function QueueDrawer({
             )}
           </div>
 
-          {isLoading ? (
-            <div className="py-10 flex items-center justify-center">
-              <Loader2 size={18} strokeWidth={1.5} className="animate-spin text-[var(--text-secondary)]" />
+          {!hasLoadedOnce && queue.length === 0 ? (
+            <div className="space-y-1.5 px-1 py-2 animate-pulse">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="p-2 flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-lg bg-[var(--bg-card)] shrink-0" />
+                  <div className="flex-1 space-y-1.5">
+                    <div className="h-3 w-36 rounded bg-[var(--bg-card)]" />
+                    <div className="h-2.5 w-24 rounded bg-[var(--bg-card)]" />
+                  </div>
+                </div>
+              ))}
             </div>
           ) : queue.length === 0 ? (
             <p className="px-2 py-6 text-[12.5px] text-[var(--text-secondary)]">

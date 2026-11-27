@@ -176,6 +176,7 @@ export function SearchView({
   const showArtists = activeFilter === "all" || activeFilter === "artists";
   const showTracks = activeFilter === "all" || activeFilter === "tracks";
   const showAlbums = activeFilter === "all" || activeFilter === "albums";
+  const isMac = /mac/i.test(navigator.platform || navigator.userAgent);
 
   return (
     <div className="flex-1 overflow-y-auto px-8 pt-7 pb-32">
@@ -198,26 +199,36 @@ export function SearchView({
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Artistas, canciones o álbumes..."
             aria-label="Buscar en Spotify"
-            className="w-full h-11 pl-11 pr-10 rounded-xl text-[14px] bg-[var(--bg-elevated)] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] border border-[var(--border-hairline)] focus:outline-none focus:border-[var(--border-subtle)] transition-colors"
+            className="w-full h-11 pl-11 pr-16 rounded-xl text-[14px] bg-[var(--bg-elevated)] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] border border-[var(--border-hairline)] focus:outline-none focus:border-[var(--border-subtle)] transition-colors"
           />
-          {query && (
-            <button
-              type="button"
-              onClick={() => {
-                setQuery("");
-                setActiveFilter("all");
-                inputRef.current?.focus();
-              }}
-              aria-label="Limpiar búsqueda"
-              className="absolute right-3 w-6 h-6 rounded-full flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors cursor-pointer"
-            >
-              <X size={14} strokeWidth={1.5} />
-            </button>
-          )}
+          <div className="absolute right-3 flex items-center gap-1.5">
+            {isSearching && (
+              <Loader2
+                size={14}
+                strokeWidth={1.6}
+                className="animate-spin text-[var(--text-tertiary)]"
+                aria-label="Buscando"
+              />
+            )}
+            {query && (
+              <button
+                type="button"
+                onClick={() => {
+                  setQuery("");
+                  setActiveFilter("all");
+                  inputRef.current?.focus();
+                }}
+                aria-label="Limpiar búsqueda"
+                className="w-6 h-6 rounded-full flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors cursor-pointer"
+              >
+                <X size={14} strokeWidth={1.5} />
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Category Filter Pills */}
-        {results && !isSearching && hasAnyResults && (
+        {/* Category Filter Pills — stay visible while refining query */}
+        {results && hasAnyResults && (
           <div className="chrome-no-select mt-4 flex flex-wrap items-center gap-1.5">
             {(
               [
@@ -252,10 +263,32 @@ export function SearchView({
         )}
       </div>
 
-      {isSearching && (
-        <div className="mt-10 flex items-center gap-2.5 text-[13px] text-[var(--text-secondary)]">
-          <Loader2 size={16} strokeWidth={1.5} className="animate-spin" />
-          Buscando...
+      {/* Subtle skeleton ONLY on initial empty search; subsequent refinements keep previous results visible */}
+      {isSearching && !results && (
+        <div className="mt-8 space-y-6 animate-pulse">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-5">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div
+                key={i}
+                className="p-3.5 rounded-2xl bg-[var(--bg-elevated)] border border-[var(--border-hairline)] flex flex-col items-center"
+              >
+                <div className="w-24 h-24 rounded-full bg-[var(--bg-card)] mb-3" />
+                <div className="h-3 w-20 rounded bg-[var(--bg-card)] mb-1.5" />
+                <div className="h-2.5 w-12 rounded bg-[var(--bg-card)]" />
+              </div>
+            ))}
+          </div>
+          <div className="space-y-1">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="h-[52px] px-3 flex items-center gap-3.5">
+                <div className="w-10 h-10 rounded-md bg-[var(--bg-card)]" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-3.5 w-44 rounded bg-[var(--bg-card)]" />
+                  <div className="h-2.5 w-28 rounded bg-[var(--bg-card)]" />
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -269,13 +302,20 @@ export function SearchView({
             Encuentra instantáneamente cualquier artista, disco o canción del catálogo de Spotify.
           </p>
           <p className="mt-2 text-[12px] text-[var(--text-tertiary)]">
-            Atajo rápido: <kbd className="px-1.5 py-0.5 rounded border border-[var(--border-subtle)] text-[11px]">Ctrl + K</kbd>
+            Atajo rápido:{" "}
+            <kbd className="px-1.5 py-0.5 rounded border border-[var(--border-subtle)] text-[11px]">
+              {isMac ? "⌘ + K" : "Ctrl + K"}
+            </kbd>
           </p>
         </div>
       )}
 
-      {results && !isSearching && (
-        <div className="mt-8 space-y-11">
+      {results && (
+        <div
+          className={`mt-8 space-y-11 transition-opacity duration-200 ease-apple ${
+            isSearching ? "opacity-65" : "opacity-100"
+          }`}
+        >
           {/* Artists FIRST — immediately visible above the fold when searching by artist name */}
           {showArtists && artists.length > 0 && (
             <section>
@@ -290,6 +330,7 @@ export function SearchView({
                       key={artist.id}
                       role="button"
                       tabIndex={0}
+                      onMouseEnter={() => void viewCache.prefetchArtist(api, artist.id, artist)}
                       onClick={(e) => {
                         const avatarEl = e.currentTarget.querySelector<HTMLElement>(
                           "[data-morph-avatar]"
@@ -465,6 +506,7 @@ export function SearchView({
                 {albums.map((album) => (
                   <div
                     key={album.id}
+                    onMouseEnter={() => void viewCache.prefetchAlbum(api, album.id)}
                     onClick={(e) => {
                       const coverEl = e.currentTarget.querySelector<HTMLElement>(
                         "[data-morph-cover]"

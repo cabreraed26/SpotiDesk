@@ -64,7 +64,7 @@ export function VirtualizedTrackList({
   return (
     <div
       ref={scrollParentRef}
-      className="anim-view-enter flex-1 overflow-y-auto px-8 pb-32 scroll-smooth"
+      className="flex-1 overflow-y-auto px-8 pb-32 scroll-smooth"
     >
       {headerSlot}
 

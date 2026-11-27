@@ -246,6 +246,7 @@ export function LibraryView({
                 return (
                   <div
                     key={album.id}
+                    onMouseEnter={() => void viewCache.prefetchAlbum(api, album.id)}
                     onClick={(e) => {
                       const coverEl = e.currentTarget.querySelector<HTMLElement>(
                         "[data-morph-cover]"
@@ -319,6 +320,7 @@ export function LibraryView({
                   key={artist.id}
                   role="button"
                   tabIndex={0}
+                  onMouseEnter={() => void viewCache.prefetchArtist(api, artist.id, artist)}
                   onClick={(e) => {
                     const avatarEl = e.currentTarget.querySelector<HTMLElement>(
                       "[data-morph-avatar]"

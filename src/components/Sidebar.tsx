@@ -14,7 +14,7 @@ export type AppView =
   | { kind: "albums" }
   | { kind: "artists" }
   | { kind: "artist"; id: string; seedArtist?: SpotifyArtist }
-  | { kind: "playlist"; id: string }
+  | { kind: "playlist"; id: string; seedPlaylist?: SpotifyPlaylist; coverSlot?: "quick" | "grid" }
   | { kind: "album"; id: string; seedAlbum?: SpotifyAlbumSimple };
 
 interface SidebarProps {
@@ -23,6 +23,8 @@ interface SidebarProps {
   currentUserId?: string;
   isLoadingPlaylists: boolean;
   onSelectView: (view: AppView) => void;
+  onPrefetchNav?: (kind: "liked" | "albums" | "artists") => void;
+  onPrefetchPlaylist?: (playlist: SpotifyPlaylist) => void;
   onCreatePlaylist: () => void;
 }
 
@@ -32,6 +34,8 @@ export function Sidebar({
   currentUserId,
   isLoadingPlaylists,
   onSelectView,
+  onPrefetchNav,
+  onPrefetchPlaylist,
   onCreatePlaylist,
 }: SidebarProps) {
   const navItems: Array<{
@@ -56,6 +60,11 @@ export function Sidebar({
             <button
               key={kind}
               type="button"
+              onMouseEnter={() => {
+                if (kind === "liked" || kind === "albums" || kind === "artists") {
+                  onPrefetchNav?.(kind);
+                }
+              }}
               onClick={() => onSelectView({ kind })}
               className={`w-full h-9 px-3 rounded-lg flex items-center gap-3 text-[13px] tracking-[-0.01em] transition-all duration-200 ease-apple active:scale-[0.98] cursor-pointer ${
                 isActive
@@ -125,7 +134,11 @@ export function Sidebar({
               <button
                 key={playlist.id}
                 type="button"
-                onClick={() => onSelectView({ kind: "playlist", id: playlist.id })}
+                onMouseEnter={() => onPrefetchPlaylist?.(playlist)}
+                onFocus={() => onPrefetchPlaylist?.(playlist)}
+                onClick={() =>
+                  onSelectView({ kind: "playlist", id: playlist.id, seedPlaylist: playlist })
+                }
                 title={
                   isThirdParty
                     ? `${playlist.name} (Playlist de terceros — contenido restringido en Modo Desarrollo)`

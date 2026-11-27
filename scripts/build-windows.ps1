@@ -4,12 +4,14 @@
     Genera los paquetes de SpotiDesk para Windows: Instaladores (NSIS .exe + MSI .msi) y Portable (.exe + .zip).
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
-    powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Arch arm64
+    powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Public
+    powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Arch arm64 -Public
 #>
 [CmdletBinding()]
 param(
     [ValidateSet("x64", "arm64")]
-    [string]$Arch = "x64"
+    [string]$Arch = "x64",
+    [switch]$Public
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,8 +49,19 @@ $BundleDir = Join-Path $ReleaseDir "bundle"
 $OutDir = Join-Path $RootDir "releases\windows"
 $PortableDir = Join-Path $OutDir "portable"
 
+$BuildSuffix = ""
+if ($Public) {
+    $env:SPOTIDESK_PUBLIC_BUILD = "1"
+    $env:VITE_SPOTIFY_CLIENT_ID = ""
+    $BuildSuffix = "_public"
+}
+
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "  Compilando $ProductName v$Version para Windows ($Arch)" -ForegroundColor Cyan
+if ($Public) {
+    Write-Host "  Compilando $ProductName v$Version para Windows ($Arch · PÚBLICO sin Client ID)" -ForegroundColor Cyan
+} else {
+    Write-Host "  Compilando $ProductName v$Version para Windows ($Arch)" -ForegroundColor Cyan
+}
 Write-Host "============================================================" -ForegroundColor Cyan
 
 if (-not (Test-Path (Join-Path $RootDir "node_modules"))) {
@@ -87,7 +100,7 @@ if (Test-Path $WebViewLoader) {
     Copy-Item -Force $WebViewLoader (Join-Path $PortableDir "WebView2Loader.dll")
 }
 
-$PortableZip = Join-Path $OutDir "${ProductName}_${Version}_windows_${Arch}_portable.zip"
+$PortableZip = Join-Path $OutDir "${ProductName}_${Version}_windows_${Arch}${BuildSuffix}_portable.zip"
 if (Test-Path $PortableZip) { Remove-Item -Force $PortableZip }
 Compress-Archive -Path (Join-Path $PortableDir "*") -DestinationPath $PortableZip -CompressionLevel Optimal
 
@@ -97,14 +110,14 @@ $GeneratedInstallers = @()
 
 $NsisSrc = Get-ChildItem -Path (Join-Path $BundleDir "nsis") -Filter "*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($NsisSrc) {
-    $NsisOut = Join-Path $OutDir "${ProductName}_${Version}_windows_${Arch}_setup.exe"
+    $NsisOut = Join-Path $OutDir "${ProductName}_${Version}_windows_${Arch}${BuildSuffix}_setup.exe"
     Copy-Item -Force $NsisSrc.FullName $NsisOut
     $GeneratedInstallers += $NsisOut
 }
 
 $MsiSrc = Get-ChildItem -Path (Join-Path $BundleDir "msi") -Filter "*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($MsiSrc) {
-    $MsiOut = Join-Path $OutDir "${ProductName}_${Version}_windows_${Arch}_installer.msi"
+    $MsiOut = Join-Path $OutDir "${ProductName}_${Version}_windows_${Arch}${BuildSuffix}_installer.msi"
     Copy-Item -Force $MsiSrc.FullName $MsiOut
     $GeneratedInstallers += $MsiOut
 }

@@ -9,8 +9,11 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "bundle:macos": "bash scripts/build-macos.sh",
+    "bundle:macos:public": "bash scripts/build-macos.sh --public",
     "bundle:macos:universal": "bash scripts/build-macos.sh --universal",
-    "bundle:windows": "powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1"
+    "bundle:macos:universal:public": "bash scripts/build-macos.sh --universal --public",
+    "bundle:windows": "powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1",
+    "bundle:windows:public": "powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Public"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.28",

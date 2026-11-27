@@ -139,7 +139,7 @@ export function useSpotifyAuth() {
       const effectiveId = (overrideClientId ?? clientId).trim();
       if (!effectiveId) {
         setError(
-          "Configura VITE_SPOTIFY_CLIENT_ID en tu archivo .env o ingrésalo abajo antes de conectar."
+          "Primero pega tu Client ID de Spotify arriba. Si no tienes uno, despliega la guía de 1 minuto para crearlo gratis."
         );
         return;
       }

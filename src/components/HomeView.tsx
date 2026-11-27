@@ -8,6 +8,14 @@ interface HomeViewProps {
   user: SpotifyUser | null;
   playlists: SpotifyPlaylist[];
   onSelectView: (view: AppView) => void;
+  onSelectPlaylist: (
+    playlist: SpotifyPlaylist,
+    morphSourceEl?: HTMLElement | null,
+    slot?: "quick" | "grid"
+  ) => void;
+  onSelectLiked: (morphSourceEl?: HTMLElement | null) => void;
+  onPrefetchPlaylist?: (playlist: SpotifyPlaylist) => void;
+  onPrefetchLiked?: () => void;
   onPlayPlaylist: (playlistUri: string) => void;
 }
 
@@ -22,13 +30,18 @@ export function HomeView({
   user,
   playlists,
   onSelectView,
+  onSelectPlaylist,
+  onSelectLiked,
+  onPrefetchPlaylist,
+  onPrefetchLiked,
   onPlayPlaylist,
 }: HomeViewProps) {
   const firstName = user?.display_name?.split(" ")[0];
   const featured = playlists.slice(0, 10);
+  const isMac = /mac/i.test(navigator.platform || navigator.userAgent);
 
   return (
-    <div className="anim-view-enter flex-1 overflow-y-auto px-8 pt-8 pb-32 space-y-10">
+    <div className="flex-1 overflow-y-auto px-8 pt-8 pb-32 space-y-10">
       {/* Editorial Header */}
       <section className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
@@ -48,7 +61,9 @@ export function HomeView({
         >
           <Search size={14} strokeWidth={1.5} />
           Buscar música
-          <span className="ml-1 text-[11px] text-[var(--text-tertiary)]">Ctrl K</span>
+          <span className="ml-1 text-[11px] text-[var(--text-tertiary)]">
+            {isMac ? "⌘ K" : "Ctrl K"}
+          </span>
         </button>
       </section>
 
@@ -59,16 +74,26 @@ export function HomeView({
           <div
             role="button"
             tabIndex={0}
-            onClick={() => onSelectView({ kind: "liked" })}
+            onMouseEnter={() => onPrefetchLiked?.()}
+            onFocus={() => onPrefetchLiked?.()}
+            onClick={(e) => {
+              const coverEl = e.currentTarget.querySelector<HTMLElement>("[data-morph-cover]");
+              onSelectLiked(coverEl);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
-                onSelectView({ kind: "liked" });
+                const coverEl = e.currentTarget.querySelector<HTMLElement>("[data-morph-cover]");
+                onSelectLiked(coverEl);
               }
             }}
             className="group playlist-row-zoom h-16 px-3 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--border-subtle)] flex items-center gap-3.5 cursor-pointer"
           >
-            <div className="w-11 h-11 rounded-lg bg-[var(--bg-card)] border border-[var(--border-hairline)] flex items-center justify-center shrink-0">
+            <div
+              data-morph-cover
+              data-liked-cover="liked"
+              className="w-11 h-11 rounded-lg bg-[var(--bg-card)] border border-[var(--border-hairline)] flex items-center justify-center shrink-0"
+            >
               <Heart size={18} strokeWidth={1.5} className="text-[var(--text-primary)]" />
             </div>
             <div className="min-w-0 flex-1">
@@ -86,18 +111,29 @@ export function HomeView({
               key={playlist.id}
               role="button"
               tabIndex={0}
-              onClick={() => onSelectView({ kind: "playlist", id: playlist.id })}
+              onMouseEnter={() => onPrefetchPlaylist?.(playlist)}
+              onFocus={() => onPrefetchPlaylist?.(playlist)}
+              onClick={(e) => {
+                const coverEl = e.currentTarget.querySelector<HTMLElement>("[data-morph-cover]");
+                onSelectPlaylist(playlist, coverEl, "quick");
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
-                  onSelectView({ kind: "playlist", id: playlist.id });
+                  const coverEl = e.currentTarget.querySelector<HTMLElement>("[data-morph-cover]");
+                  onSelectPlaylist(playlist, coverEl, "quick");
                 }
               }}
               className="group playlist-row-zoom h-16 px-3 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--border-subtle)] flex items-center gap-3.5 cursor-pointer"
             >
-              <div className="playlist-cover-zoom shrink-0">
+              <div
+                data-morph-cover
+                data-playlist-cover={playlist.id}
+                data-cover-slot="quick"
+                className="playlist-cover-zoom shrink-0 rounded-lg overflow-hidden"
+              >
                 <LazyCover
-                  src={getBestImage(playlist.images, "small")}
+                  src={getBestImage(playlist.images, "medium") ?? getBestImage(playlist.images, "small")}
                   alt={playlist.name}
                   className="w-11 h-11"
                   iconSize={16}
@@ -144,10 +180,29 @@ export function HomeView({
             {featured.map((playlist) => (
               <div
                 key={playlist.id}
-                onClick={() => onSelectView({ kind: "playlist", id: playlist.id })}
+                role="button"
+                tabIndex={0}
+                onMouseEnter={() => onPrefetchPlaylist?.(playlist)}
+                onFocus={() => onPrefetchPlaylist?.(playlist)}
+                onClick={(e) => {
+                  const coverEl = e.currentTarget.querySelector<HTMLElement>("[data-morph-cover]");
+                  onSelectPlaylist(playlist, coverEl, "grid");
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    const coverEl = e.currentTarget.querySelector<HTMLElement>("[data-morph-cover]");
+                    onSelectPlaylist(playlist, coverEl, "grid");
+                  }
+                }}
                 className="group playlist-card-zoom p-3.5 rounded-2xl bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--border-subtle)] cursor-pointer"
               >
-                <div className="playlist-cover-zoom relative aspect-square mb-3.5">
+                <div
+                  data-morph-cover
+                  data-playlist-cover={playlist.id}
+                  data-cover-slot="grid"
+                  className="playlist-cover-zoom relative aspect-square mb-3.5 rounded-xl overflow-hidden"
+                >
                   <LazyCover
                     src={getBestImage(playlist.images, "medium")}
                     alt={playlist.name}

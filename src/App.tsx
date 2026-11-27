@@ -333,6 +333,7 @@ export function App() {
     }
 
     let cancelled = false;
+    let prefetchTimer: number | undefined;
     setIsLoadingPlaylists(true);
 
     (async () => {
@@ -343,6 +344,22 @@ export function App() {
             (p): p is SpotifyPlaylist => Boolean(p && p.id)
           );
           setPlaylists(valid);
+
+          // Silently warm core views in the background so first clicks feel 0ms instantaneous
+          prefetchTimer = window.setTimeout(() => {
+            if (cancelled) return;
+            void viewCache.prefetchLiked(auth.api);
+            void viewCache.prefetchSavedAlbums(auth.api);
+            void viewCache.prefetchFollowedArtists(auth.api);
+
+            const uid = auth.user?.id;
+            const ownTop = valid
+              .filter((p) => !uid || !p.owner?.id || p.owner.id === uid || p.collaborative)
+              .slice(0, 3);
+            for (const pl of ownTop) {
+              void viewCache.prefetchPlaylist(auth.api, pl.id, pl);
+            }
+          }, 350);
         }
       } catch (err) {
         console.warn("[SpotiDesk] Error cargando playlists:", err);
@@ -353,8 +370,9 @@ export function App() {
 
     return () => {
       cancelled = true;
+      if (prefetchTimer) window.clearTimeout(prefetchTimer);
     };
-  }, [auth.isAuthenticated, auth.api]);
+  }, [auth.isAuthenticated, auth.api, auth.user?.id]);
 
   const handleNextTrack = useCallback(() => {
     setTrackDir("next");
@@ -388,6 +406,7 @@ export function App() {
     async (playlist: SpotifyPlaylist, track: UnifiedTrack) => {
       try {
         await auth.api.addTrackToPlaylist(playlist.id, track.uri);
+        viewCache.invalidatePlaylist(playlist.id);
         showToast(`Añadida a "${playlist.name}"`);
       } catch (err) {
         if (err instanceof SpotifyApiError && err.status === 403) {
@@ -413,7 +432,10 @@ export function App() {
       });
       setPlaylists((prev) => [created, ...prev]);
       setNavState((prev) => {
-        const nextStack = [...prev.stack.slice(0, prev.index + 1), { kind: "playlist" as const, id: created.id }].slice(-40);
+        const nextStack = [
+          ...prev.stack.slice(0, prev.index + 1),
+          { kind: "playlist" as const, id: created.id, seedPlaylist: created },
+        ].slice(-40);
         return { stack: nextStack, index: nextStack.length - 1 };
       });
       showToast(`Playlist "${created.name}" creada`);
@@ -427,10 +449,12 @@ export function App() {
         if (currentlyLiked) {
           await auth.api.removeSavedTrack(track.id, track.uri);
           if (player.currentTrack?.uri === track.uri) setIsCurrentLiked(false);
+          viewCache.updateLikedOptimistic(track, false);
           showToast("Eliminada de Tus Me Gusta");
         } else {
           await auth.api.saveTrack(track.id, track.uri);
           if (player.currentTrack?.uri === track.uri) setIsCurrentLiked(true);
+          viewCache.updateLikedOptimistic(track, true);
           showToast("Guardada en Tus Me Gusta");
         }
       } catch (err) {
@@ -563,16 +587,25 @@ export function App() {
       }
 
       // Assign source artwork morph BEFORE capturing the old snapshot
-      let expectingForwardTarget: "artist" | "album" | null = null;
-      let expectingBackTarget: { kind: "artist" | "album"; id: string } | null = null;
+      let expectingForwardTarget: "artist" | "album" | "playlist" | "liked" | null = null;
+      let expectingBackTarget:
+        | { kind: "artist" | "album"; id: string }
+        | { kind: "playlist"; id: string; coverSlot?: "quick" | "grid" }
+        | { kind: "liked" }
+        | null = null;
 
       if (dir === "forward" && morphSourceEl && morphSourceEl.isConnected) {
-        if (nextView.kind === "artist" || nextView.kind === "album") {
+        if (
+          nextView.kind === "artist" ||
+          nextView.kind === "album" ||
+          nextView.kind === "playlist" ||
+          nextView.kind === "liked"
+        ) {
           markMorph(morphSourceEl);
           expectingForwardTarget = nextView.kind;
         }
       } else if (dir === "back" && prevView) {
-        // Only pair back-morph when target view hydrates synchronously from cache
+        // Only pair back-morph when target view hydrates synchronously from cache/state
         if (
           prevView.kind === "album" &&
           (nextView.kind === "artist" || nextView.kind === "albums" || nextView.kind === "search")
@@ -594,6 +627,24 @@ export function App() {
           if (hero) {
             markMorph(hero);
             expectingBackTarget = { kind: "artist", id: prevView.id };
+          }
+        } else if (prevView.kind === "playlist" && nextView.kind === "home") {
+          const hero = document.querySelector<HTMLElement>(
+            `[data-playlist-hero="${CSS.escape(prevView.id)}"]`
+          );
+          if (hero) {
+            markMorph(hero);
+            expectingBackTarget = {
+              kind: "playlist",
+              id: prevView.id,
+              coverSlot: prevView.coverSlot,
+            };
+          }
+        } else if (prevView.kind === "liked" && nextView.kind === "home") {
+          const hero = document.querySelector<HTMLElement>('[data-liked-hero="liked"]');
+          if (hero) {
+            markMorph(hero);
+            expectingBackTarget = { kind: "liked" };
           }
         }
       }
@@ -619,6 +670,14 @@ export function App() {
                 `[data-album-hero="${CSS.escape(nextView.id)}"]`
               )
             );
+          } else if (expectingForwardTarget === "playlist" && nextView.kind === "playlist") {
+            markMorph(
+              document.querySelector<HTMLElement>(
+                `[data-playlist-hero="${CSS.escape(nextView.id)}"]`
+              )
+            );
+          } else if (expectingForwardTarget === "liked" && nextView.kind === "liked") {
+            markMorph(document.querySelector<HTMLElement>('[data-liked-hero="liked"]'));
           } else if (expectingBackTarget?.kind === "album") {
             markMorph(
               document.querySelector<HTMLElement>(
@@ -631,6 +690,22 @@ export function App() {
                 `[data-artist-cover="${CSS.escape(expectingBackTarget.id)}"]`
               )
             );
+          } else if (expectingBackTarget?.kind === "playlist") {
+            const escapedId = CSS.escape(expectingBackTarget.id);
+            const preferredSlot = expectingBackTarget.coverSlot;
+            const targetCover =
+              (preferredSlot
+                ? document.querySelector<HTMLElement>(
+                    `[data-playlist-cover="${escapedId}"][data-cover-slot="${preferredSlot}"]`
+                  )
+                : null) ??
+              document.querySelector<HTMLElement>(
+                `[data-playlist-cover="${escapedId}"][data-cover-slot="grid"]`
+              ) ??
+              document.querySelector<HTMLElement>(`[data-playlist-cover="${escapedId}"]`);
+            markMorph(targetCover);
+          } else if (expectingBackTarget?.kind === "liked") {
+            markMorph(document.querySelector<HTMLElement>('[data-liked-cover="liked"]'));
           }
         });
 
@@ -806,6 +881,47 @@ export function App() {
     [navigateView]
   );
 
+  const handleSelectPlaylistFromHome = useCallback(
+    (
+      playlist: SpotifyPlaylist,
+      morphSourceEl?: HTMLElement | null,
+      coverSlot?: "quick" | "grid"
+    ) => {
+      navigateView(
+        { kind: "playlist", id: playlist.id, seedPlaylist: playlist, coverSlot },
+        { dir: "forward", morphSourceEl }
+      );
+    },
+    [navigateView]
+  );
+
+  const handleSelectLikedFromHome = useCallback(
+    (morphSourceEl?: HTMLElement | null) => {
+      navigateView({ kind: "liked" }, { dir: "forward", morphSourceEl });
+    },
+    [navigateView]
+  );
+
+  const handlePrefetchNav = useCallback(
+    (kind: "liked" | "albums" | "artists") => {
+      if (kind === "liked") {
+        void viewCache.prefetchLiked(auth.api);
+      } else if (kind === "albums") {
+        void viewCache.prefetchSavedAlbums(auth.api);
+      } else {
+        void viewCache.prefetchFollowedArtists(auth.api);
+      }
+    },
+    [auth.api]
+  );
+
+  const handlePrefetchPlaylist = useCallback(
+    (playlist: SpotifyPlaylist) => {
+      void viewCache.prefetchPlaylist(auth.api, playlist.id, playlist);
+    },
+    [auth.api]
+  );
+
   // Global in-app keyboard shortcuts (Ctrl+K -> Search, Alt+Left/Right -> Back/Forward, Space -> Play/Pause, F -> Stage, Esc -> Close Stage)
   useEffect(() => {
     if (!auth.isAuthenticated) return;
@@ -884,18 +1000,15 @@ export function App() {
     setStageWithTransition,
   ]);
 
-  const windowRadiusClass = isWindowMaximized
-    ? "rounded-none"
-    : isMac
-      ? "rounded-[16px]"
-      : "rounded-[8px]";
+  const windowRadiusClass =
+    isWindowMaximized || isMac ? "rounded-none" : "rounded-[8px]";
 
   return (
     <div
       className={`h-screen w-screen flex flex-col bg-[var(--bg-primary)] text-[var(--text-primary)] overflow-hidden relative ${windowRadiusClass}`}
     >
-      {/* Crisp subtle window rim matching native rounded corners when windowed */}
-      {!isWindowMaximized && (
+      {/* Crisp subtle window rim matching native rounded corners on frameless Windows */}
+      {!isWindowMaximized && !isMac && (
         <div
           aria-hidden="true"
           className={`pointer-events-none fixed inset-0 z-[60] border border-[var(--border-subtle)] ${windowRadiusClass}`}
@@ -976,6 +1089,8 @@ export function App() {
               currentUserId={auth.user?.id}
               isLoadingPlaylists={isLoadingPlaylists}
               onSelectView={handleSelectView}
+              onPrefetchNav={handlePrefetchNav}
+              onPrefetchPlaylist={handlePrefetchPlaylist}
               onCreatePlaylist={() => setIsCreatePlaylistOpen(true)}
             />
 
@@ -1003,6 +1118,10 @@ export function App() {
                   user={auth.user}
                   playlists={playlists}
                   onSelectView={handleSelectView}
+                  onSelectPlaylist={handleSelectPlaylistFromHome}
+                  onSelectLiked={handleSelectLikedFromHome}
+                  onPrefetchPlaylist={handlePrefetchPlaylist}
+                  onPrefetchLiked={() => void viewCache.prefetchLiked(auth.api)}
                   onPlayPlaylist={(uri) => {
                     setTrackDir("next");
                     void player.playContext({ contextUri: uri, offsetPosition: 0 });
@@ -1030,6 +1149,7 @@ export function App() {
 
               {(activeView.kind === "albums" || activeView.kind === "artists") && (
                 <LibraryView
+                  key={activeView.kind}
                   mode={activeView.kind}
                   api={auth.api}
                   onSelectAlbum={handleSelectAlbum}
@@ -1043,6 +1163,7 @@ export function App() {
 
               {activeView.kind === "artist" && (
                 <ArtistView
+                  key={activeView.id}
                   artistId={activeView.id}
                   seedArtist={activeView.seedArtist}
                   api={auth.api}
@@ -1062,6 +1183,7 @@ export function App() {
                 activeView.kind === "playlist" ||
                 activeView.kind === "album") && (
                 <CollectionView
+                  key={getViewKey(activeView)}
                   target={activeView}
                   api={auth.api}
                   cachedPlaylist={
@@ -1069,7 +1191,11 @@ export function App() {
                       ? playlists.find((p) => p.id === activeView.id)
                       : undefined
                   }
-                  canGoBack={activeView.kind === "album" && canGoBack}
+                  canGoBack={
+                    canGoBack &&
+                    (activeView.kind === "album" ||
+                      navState.stack[navState.index - 1]?.kind === "home")
+                  }
                   onGoBack={handleGoBack}
                   currentTrackUri={player.currentTrack?.uri}
                   activeContextUri={player.contextUri}

@@ -5,10 +5,19 @@ import tailwindcss from "@tailwindcss/vite";
 import process from "node:process";
 
 const host = process.env.TAURI_DEV_HOST;
+const isPublicBuild = process.env.SPOTIDESK_PUBLIC_BUILD === "1";
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
+
+  ...(isPublicBuild
+    ? {
+        define: {
+          "import.meta.env.VITE_SPOTIFY_CLIENT_ID": JSON.stringify(""),
+        },
+      }
+    : {}),
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   clearScreen: false,

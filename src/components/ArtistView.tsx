@@ -188,6 +188,7 @@ export function ArtistView({
 
   const artistUri = artist?.uri ?? `spotify:artist:${artistId}`;
   const avatarUrl = getBestImage(artist?.images, "large");
+  const avatarPlaceholderUrl = getBestImage(artist?.images, "medium");
   const followersLabel = formatFollowers(artist?.followers?.total);
   const genresLabel = artist?.genres?.slice(0, 3).join(" · ");
 
@@ -222,16 +223,28 @@ export function ArtistView({
       <section className="flex flex-col sm:flex-row sm:items-end gap-7">
         <div
           data-artist-hero={artistId}
-          className="shrink-0 w-44 h-44 rounded-full overflow-hidden bg-[var(--bg-elevated)] border border-[var(--border-subtle)] flex items-center justify-center"
+          className="relative shrink-0 w-44 h-44 rounded-full overflow-hidden bg-[var(--bg-elevated)] border border-[var(--border-subtle)] flex items-center justify-center"
           style={{ boxShadow: "var(--shadow-artwork)" }}
         >
           {avatarUrl ? (
-            <img
-              src={avatarUrl}
-              alt={artist?.name ?? "Artista"}
-              decoding="async"
-              className="w-full h-full object-cover"
-            />
+            <>
+              {avatarPlaceholderUrl && avatarPlaceholderUrl !== avatarUrl && (
+                <img
+                  src={avatarPlaceholderUrl}
+                  alt=""
+                  aria-hidden="true"
+                  decoding="sync"
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
+              )}
+              <img
+                src={avatarUrl}
+                alt={artist?.name ?? "Artista"}
+                loading="eager"
+                decoding="sync"
+                className="relative z-10 w-full h-full object-cover"
+              />
+            </>
           ) : (
             <User size={48} strokeWidth={1.3} className="text-[var(--text-tertiary)]" />
           )}
@@ -352,6 +365,7 @@ export function ArtistView({
                 return (
                   <div
                     key={album.id}
+                    onMouseEnter={() => void viewCache.prefetchAlbum(api, album.id)}
                     onClick={(e) => {
                       const coverEl = e.currentTarget.querySelector<HTMLElement>(
                         "[data-morph-cover]"
