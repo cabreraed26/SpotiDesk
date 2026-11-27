@@ -15,6 +15,7 @@ import { HomeView } from "./components/HomeView";
 import { SearchView } from "./components/SearchView";
 import { CollectionView } from "./components/CollectionView";
 import { LibraryView } from "./components/LibraryView";
+import { ArtistView } from "./components/ArtistView";
 import { PlayerBar } from "./components/PlayerBar";
 import { NowPlayingStage, type TrackTransitionDir } from "./components/NowPlayingStage";
 import { TrackContextMenu, type ContextMenuState } from "./components/TrackContextMenu";
@@ -24,8 +25,27 @@ import { CreatePlaylistModal } from "./components/CreatePlaylistModal";
 import { Toast, type ToastMessage } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SpotifyApiError } from "./lib/spotifyApi";
-import type { SpotifyPlaylist, UnifiedTrack } from "./types/spotify";
+import { viewCache } from "./lib/viewCache";
+import type {
+  SpotifyAlbumSimple,
+  SpotifyArtist,
+  SpotifyPlaylist,
+  UnifiedTrack,
+} from "./types/spotify";
 import type { NotchPosition, NotchStatePayload } from "./components/DesktopNotch";
+
+type NavDir = "forward" | "back" | "tab";
+
+function getViewKey(view: AppView): string {
+  switch (view.kind) {
+    case "artist":
+    case "playlist":
+    case "album":
+      return `${view.kind}:${view.id}`;
+    default:
+      return view.kind;
+  }
+}
 
 const CLOSE_TO_TRAY_KEY = "spotidesk.close_to_tray";
 const NOTCH_POSITION_KEY = "spotidesk.notch_position";
@@ -82,7 +102,15 @@ export function App() {
     onAutoplayTriggered: handleAutoplayTriggered,
   });
 
-  const [activeView, setActiveView] = useState<AppView>({ kind: "home" });
+  const [navState, setNavState] = useState<{ stack: AppView[]; index: number }>({
+    stack: [{ kind: "home" }],
+    index: 0,
+  });
+  const navRef = useRef(navState);
+  navRef.current = navState;
+  const mainRef = useRef<HTMLElement | null>(null);
+  const activeView = navState.stack[navState.index] ?? { kind: "home" };
+  const canGoBack = navState.index > 0;
   const [playlists, setPlaylists] = useState<SpotifyPlaylist[]>([]);
   const [isLoadingPlaylists, setIsLoadingPlaylists] = useState(false);
   const [isStageOpen, setIsStageOpen] = useState(false);
@@ -296,8 +324,9 @@ export function App() {
   // Fetch user's playlists once authenticated
   useEffect(() => {
     if (!auth.isAuthenticated) {
+      viewCache.clear();
       setPlaylists([]);
-      setActiveView({ kind: "home" });
+      setNavState({ stack: [{ kind: "home" }], index: 0 });
       setIsStageOpen(false);
       setIsQueueOpen(false);
       return;
@@ -383,7 +412,10 @@ export function App() {
         userId: auth.user?.id,
       });
       setPlaylists((prev) => [created, ...prev]);
-      setActiveView({ kind: "playlist", id: created.id });
+      setNavState((prev) => {
+        const nextStack = [...prev.stack.slice(0, prev.index + 1), { kind: "playlist" as const, id: created.id }].slice(-40);
+        return { stack: nextStack, index: nextStack.length - 1 };
+      });
       showToast(`Playlist "${created.name}" creada`);
     },
     [auth.api, auth.user?.id, showToast]
@@ -498,10 +530,132 @@ export function App() {
     };
   }, []);
 
-  const handleSelectView = useCallback(
-    (view: AppView) => {
-      if (isStageOpen) setStageWithTransition(false);
+  // Fluid, zero-reload View Transition engine with directional canvas glides & shared-element artwork morphing
+  const transitionView = useCallback(
+    (
+      nextState: { stack: AppView[]; index: number },
+      dir: NavDir,
+      morphSourceEl?: HTMLElement | null
+    ) => {
+      const prevView = navRef.current.stack[navRef.current.index];
+      const nextView = nextState.stack[nextState.index];
+      const doc = document as Document & {
+        startViewTransition?: (cb: () => void) => { finished: Promise<void> };
+      };
 
+      const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+      if (typeof doc.startViewTransition !== "function" || reducedMotion) {
+        setNavState(nextState);
+        return;
+      }
+
+      const touched: HTMLElement[] = [];
+      const markMorph = (el: HTMLElement | null) => {
+        if (!el) return;
+        el.style.viewTransitionName = "hero-artwork-morph";
+        touched.push(el);
+      };
+
+      // Assign main-canvas ONLY during in-app view navigation so it never lifts above NowPlayingStage
+      if (mainRef.current) {
+        mainRef.current.style.viewTransitionName = "main-canvas";
+        touched.push(mainRef.current);
+      }
+
+      // Assign source artwork morph BEFORE capturing the old snapshot
+      let expectingForwardTarget: "artist" | "album" | null = null;
+      let expectingBackTarget: { kind: "artist" | "album"; id: string } | null = null;
+
+      if (dir === "forward" && morphSourceEl && morphSourceEl.isConnected) {
+        if (nextView.kind === "artist" || nextView.kind === "album") {
+          markMorph(morphSourceEl);
+          expectingForwardTarget = nextView.kind;
+        }
+      } else if (dir === "back" && prevView) {
+        // Only pair back-morph when target view hydrates synchronously from cache
+        if (
+          prevView.kind === "album" &&
+          (nextView.kind === "artist" || nextView.kind === "albums" || nextView.kind === "search")
+        ) {
+          const hero = document.querySelector<HTMLElement>(
+            `[data-album-hero="${CSS.escape(prevView.id)}"]`
+          );
+          if (hero) {
+            markMorph(hero);
+            expectingBackTarget = { kind: "album", id: prevView.id };
+          }
+        } else if (
+          prevView.kind === "artist" &&
+          (nextView.kind === "artists" || nextView.kind === "search")
+        ) {
+          const hero = document.querySelector<HTMLElement>(
+            `[data-artist-hero="${CSS.escape(prevView.id)}"]`
+          );
+          if (hero) {
+            markMorph(hero);
+            expectingBackTarget = { kind: "artist", id: prevView.id };
+          }
+        }
+      }
+
+      document.documentElement.dataset.navDir = dir;
+
+      try {
+        const vt = doc.startViewTransition(() => {
+          flushSync(() => {
+            setNavState(nextState);
+          });
+
+          // Pair destination artwork BEFORE the browser captures the new snapshot
+          if (expectingForwardTarget === "artist" && nextView.kind === "artist") {
+            markMorph(
+              document.querySelector<HTMLElement>(
+                `[data-artist-hero="${CSS.escape(nextView.id)}"]`
+              )
+            );
+          } else if (expectingForwardTarget === "album" && nextView.kind === "album") {
+            markMorph(
+              document.querySelector<HTMLElement>(
+                `[data-album-hero="${CSS.escape(nextView.id)}"]`
+              )
+            );
+          } else if (expectingBackTarget?.kind === "album") {
+            markMorph(
+              document.querySelector<HTMLElement>(
+                `[data-album-cover="${CSS.escape(expectingBackTarget.id)}"]`
+              )
+            );
+          } else if (expectingBackTarget?.kind === "artist") {
+            markMorph(
+              document.querySelector<HTMLElement>(
+                `[data-artist-cover="${CSS.escape(expectingBackTarget.id)}"]`
+              )
+            );
+          }
+        });
+
+        vt.finished.finally(() => {
+          delete document.documentElement.dataset.navDir;
+          for (const el of touched) {
+            el.style.viewTransitionName = "";
+          }
+        });
+      } catch {
+        delete document.documentElement.dataset.navDir;
+        for (const el of touched) {
+          el.style.viewTransitionName = "";
+        }
+        setNavState(nextState);
+      }
+    },
+    []
+  );
+
+  const navigateView = useCallback(
+    (
+      view: AppView,
+      options?: { dir?: NavDir; morphSourceEl?: HTMLElement | null }
+    ) => {
       if (view.kind === "playlist") {
         const targetPlaylist = playlists.find((p) => p.id === view.id);
         const userId = auth.user?.id;
@@ -520,12 +674,139 @@ export function App() {
         }
       }
 
-      setActiveView(view);
+      const cur = navRef.current;
+      const currentView = cur.stack[cur.index];
+      const isSameView = Boolean(currentView && getViewKey(currentView) === getViewKey(view));
+
+      if (isStageOpen) {
+        const nextState = isSameView
+          ? cur
+          : (() => {
+              const nextStack = [...cur.stack.slice(0, cur.index + 1), view].slice(-40);
+              return { stack: nextStack, index: nextStack.length - 1 };
+            })();
+        const doc = document as Document & {
+          startViewTransition?: (cb: () => void) => { finished: Promise<void> };
+        };
+        if (typeof doc.startViewTransition === "function") {
+          doc.startViewTransition(() => {
+            flushSync(() => {
+              setIsStageOpen(false);
+              if (!isSameView) setNavState(nextState);
+            });
+          });
+        } else {
+          setIsStageOpen(false);
+          if (!isSameView) setNavState(nextState);
+        }
+        return;
+      }
+
+      if (isSameView) {
+        return;
+      }
+
+      const nextStack = [...cur.stack.slice(0, cur.index + 1), view].slice(-40);
+      const nextState = { stack: nextStack, index: nextStack.length - 1 };
+      const inferredDir: NavDir =
+        options?.dir ??
+        (view.kind === "artist" || view.kind === "album" ? "forward" : "tab");
+
+      transitionView(nextState, inferredDir, options?.morphSourceEl);
     },
-    [auth.user?.id, isStageOpen, playlists, setStageWithTransition, showToast]
+    [auth.user?.id, isStageOpen, playlists, showToast, transitionView]
   );
 
-  // Global in-app keyboard shortcuts (Ctrl+K -> Search, Space -> Play/Pause, F -> Stage, Esc -> Close Stage)
+  const handleGoBack = useCallback(() => {
+    const cur = navRef.current;
+    if (cur.index <= 0) return;
+    transitionView({ stack: cur.stack, index: cur.index - 1 }, "back");
+  }, [transitionView]);
+
+  const handleGoForward = useCallback(() => {
+    const cur = navRef.current;
+    if (cur.index >= cur.stack.length - 1) return;
+    transitionView({ stack: cur.stack, index: cur.index + 1 }, "forward");
+  }, [transitionView]);
+
+  const handleSelectView = useCallback(
+    (view: AppView) => {
+      navigateView(view, { dir: "tab" });
+    },
+    [navigateView]
+  );
+
+  const handleSelectArtist = useCallback(
+    (artistOrId: SpotifyArtist | string, morphSourceEl?: HTMLElement | null, fallbackName?: string) => {
+      if (typeof artistOrId === "string") {
+        // Resolve artist by name if only the display name was available (e.g. SDK track without URI)
+        if (!artistOrId && fallbackName) {
+          void auth.api
+            .search(fallbackName, 5)
+            .then((res) => {
+              const items = (res.artists?.items ?? []).filter(Boolean);
+              if (items.length === 0) {
+                showToast(`No se encontró el perfil de ${fallbackName}`, "warning");
+                return;
+              }
+              const norm = (s: string) =>
+                s
+                  .normalize("NFD")
+                  .replace(/[\u0300-\u036f]/g, "")
+                  .toLowerCase()
+                  .trim();
+              const target = norm(fallbackName);
+              const best =
+                items.find((a) => norm(a.name) === target) ??
+                items.find((a) => norm(a.name).startsWith(target)) ??
+                items[0];
+              navigateView(
+                { kind: "artist", id: best.id, seedArtist: best },
+                { dir: "forward", morphSourceEl }
+              );
+            })
+            .catch(() => {
+              showToast(`No se pudo abrir el perfil de ${fallbackName}`, "warning");
+            });
+          return;
+        }
+        if (!artistOrId) return;
+        const seedArtist: SpotifyArtist | undefined = fallbackName
+          ? {
+              id: artistOrId,
+              name: fallbackName,
+              uri: `spotify:artist:${artistOrId}`,
+            }
+          : undefined;
+        navigateView(
+          { kind: "artist", id: artistOrId, seedArtist },
+          { dir: "forward", morphSourceEl }
+        );
+      } else {
+        navigateView(
+          { kind: "artist", id: artistOrId.id, seedArtist: artistOrId },
+          { dir: "forward", morphSourceEl }
+        );
+      }
+    },
+    [auth.api, navigateView, showToast]
+  );
+
+  const handleSelectAlbum = useCallback(
+    (albumOrId: SpotifyAlbumSimple | string, morphSourceEl?: HTMLElement | null) => {
+      if (typeof albumOrId === "string") {
+        navigateView({ kind: "album", id: albumOrId }, { dir: "forward", morphSourceEl });
+      } else {
+        navigateView(
+          { kind: "album", id: albumOrId.id, seedAlbum: albumOrId },
+          { dir: "forward", morphSourceEl }
+        );
+      }
+    },
+    [navigateView]
+  );
+
+  // Global in-app keyboard shortcuts (Ctrl+K -> Search, Alt+Left/Right -> Back/Forward, Space -> Play/Pause, F -> Stage, Esc -> Close Stage)
   useEffect(() => {
     if (!auth.isAuthenticated) return;
 
@@ -542,10 +823,21 @@ export function App() {
         return;
       }
 
+      if (e.altKey && e.key === "ArrowLeft" && !isStageOpen) {
+        e.preventDefault();
+        handleGoBack();
+        return;
+      }
+
+      if (e.altKey && e.key === "ArrowRight" && !isStageOpen) {
+        e.preventDefault();
+        handleGoForward();
+        return;
+      }
+
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        if (isStageOpen) setStageWithTransition(false);
-        setActiveView({ kind: "search" });
+        navigateView({ kind: "search" }, { dir: "tab" });
         return;
       }
 
@@ -563,9 +855,34 @@ export function App() {
       }
     };
 
+    // Mouse Back / Forward side buttons (3 & 4)
+    const handleMouseUp = (e: MouseEvent) => {
+      if (isStageOpen) return;
+      if (e.button === 3) {
+        e.preventDefault();
+        handleGoBack();
+      } else if (e.button === 4) {
+        e.preventDefault();
+        handleGoForward();
+      }
+    };
+
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [auth.isAuthenticated, isSettingsOpen, isStageOpen, player, setStageWithTransition]);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [
+    auth.isAuthenticated,
+    handleGoBack,
+    handleGoForward,
+    isSettingsOpen,
+    isStageOpen,
+    navigateView,
+    player,
+    setStageWithTransition,
+  ]);
 
   const windowRadiusClass = isWindowMaximized
     ? "rounded-none"
@@ -662,7 +979,10 @@ export function App() {
               onCreatePlaylist={() => setIsCreatePlaylistOpen(true)}
             />
 
-            <main className="flex-1 flex flex-col min-w-0 min-h-0 relative">
+            <main
+              ref={mainRef}
+              className="flex-1 flex flex-col min-w-0 min-h-0 relative"
+            >
               {/* Subtle dismissible SDK status banner */}
               {player.sdkError && (
                 <div className="anim-stagger-1 mx-8 mt-4 px-4 py-2.5 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] flex items-center justify-between gap-3 text-[12px] text-[var(--text-primary)]">
@@ -700,7 +1020,10 @@ export function App() {
                     await player.playContext(opts);
                   }}
                   onTogglePlay={() => void player.togglePlay()}
-                  onSelectAlbum={(id) => setActiveView({ kind: "album", id })}
+                  onSelectAlbum={handleSelectAlbum}
+                  onSelectArtist={(artist, el, fallbackName) =>
+                    handleSelectArtist(artist, el, fallbackName)
+                  }
                   onTrackContextMenu={handleOpenContextMenu}
                 />
               )}
@@ -709,11 +1032,29 @@ export function App() {
                 <LibraryView
                   mode={activeView.kind}
                   api={auth.api}
-                  onSelectAlbum={(id) => setActiveView({ kind: "album", id })}
+                  onSelectAlbum={handleSelectAlbum}
+                  onSelectArtist={(artist, el) => handleSelectArtist(artist, el)}
                   onPlayContext={async (opts) => {
                     setTrackDir("next");
                     await player.playContext(opts);
                   }}
+                />
+              )}
+
+              {activeView.kind === "artist" && (
+                <ArtistView
+                  artistId={activeView.id}
+                  seedArtist={activeView.seedArtist}
+                  api={auth.api}
+                  canGoBack={canGoBack}
+                  onGoBack={handleGoBack}
+                  onSelectAlbum={handleSelectAlbum}
+                  onPlayContext={async (opts) => {
+                    setTrackDir("next");
+                    await player.playContext(opts);
+                  }}
+                  onToggleShuffle={player.toggleShuffle}
+                  shuffle={player.shuffle}
                 />
               )}
 
@@ -728,6 +1069,8 @@ export function App() {
                       ? playlists.find((p) => p.id === activeView.id)
                       : undefined
                   }
+                  canGoBack={activeView.kind === "album" && canGoBack}
+                  onGoBack={handleGoBack}
                   currentTrackUri={player.currentTrack?.uri}
                   activeContextUri={player.contextUri}
                   sdkWindowTracks={player.sdkWindowTracks}
@@ -739,7 +1082,8 @@ export function App() {
                   onTogglePlay={() => void player.togglePlay()}
                   onToggleShuffle={player.toggleShuffle}
                   shuffle={player.shuffle}
-                  onSelectAlbum={(id) => setActiveView({ kind: "album", id })}
+                  onSelectAlbum={handleSelectAlbum}
+                  onSelectArtist={(artist) => handleSelectArtist(artist)}
                   onTrackContextMenu={handleOpenContextMenu}
                   onRestrictedPlaylist={(name) =>
                     showToast(
@@ -762,6 +1106,9 @@ export function App() {
                   setTrackDir("next");
                   void player.playContext({ uris: [track.uri] });
                 }}
+                onSelectArtist={(artistId, artistName) =>
+                  handleSelectArtist(artistId, null, artistName)
+                }
                 onTrackContextMenu={handleOpenContextMenu}
                 onClose={() => setIsQueueOpen(false)}
               />
@@ -799,6 +1146,9 @@ export function App() {
                 onCycleRepeat={() => void player.cycleRepeat()}
                 onRefreshDevices={() => void player.refreshDevices()}
                 onTransferDevice={(id) => void player.transferToDevice(id)}
+                onSelectArtist={(artistId, artistName) =>
+                  handleSelectArtist(artistId, null, artistName)
+                }
               />
             )}
 
@@ -836,6 +1186,9 @@ export function App() {
                     void player.playContext({ uris: [uri] });
                   }
                 }}
+                onSelectArtist={(artistId, artistName) =>
+                  handleSelectArtist(artistId, null, artistName)
+                }
               />
             )}
 
@@ -858,7 +1211,10 @@ export function App() {
                     setStageWithTransition(true);
                   });
                 }}
-                onGoToAlbum={(albumId) => setActiveView({ kind: "album", id: albumId })}
+                onGoToArtist={(artistId, artistName) =>
+                  handleSelectArtist(artistId, null, artistName)
+                }
+                onGoToAlbum={(albumId) => handleSelectAlbum(albumId)}
                 onCopyLink={(track) => void handleCopyLink(track)}
               />
             )}

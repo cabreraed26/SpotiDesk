@@ -4,6 +4,7 @@ import type { SpotifyApiClient } from "../lib/spotifyApi";
 import type { UnifiedTrack } from "../types/spotify";
 import { formatDuration, normalizeTrack } from "../lib/format";
 import { LazyCover } from "./LazyCover";
+import { ArtistLinks } from "./ArtistLinks";
 
 interface QueueDrawerProps {
   api: SpotifyApiClient;
@@ -11,6 +12,7 @@ interface QueueDrawerProps {
   isPlaying: boolean;
   sdkWindowTracks: UnifiedTrack[];
   onPlayTrack: (track: UnifiedTrack) => void;
+  onSelectArtist?: (artistId: string, artistName?: string) => void;
   onTrackContextMenu?: (e: React.MouseEvent, track: UnifiedTrack) => void;
   onClose: () => void;
 }
@@ -21,6 +23,7 @@ export function QueueDrawer({
   isPlaying,
   sdkWindowTracks,
   onPlayTrack,
+  onSelectArtist,
   onTrackContextMenu,
   onClose,
 }: QueueDrawerProps) {
@@ -113,7 +116,15 @@ export function QueueDrawer({
                   {currentTrack.name}
                 </div>
                 <div className="text-[11.5px] text-[var(--text-secondary)] truncate">
-                  {currentTrack.artists}
+                  <ArtistLinks
+                    artistsText={currentTrack.artists}
+                    artistItems={currentTrack.artistItems}
+                    fallbackArtistId={currentTrack.artistId}
+                    onSelectArtist={(id, name) => {
+                      onSelectArtist?.(id, name);
+                      onClose();
+                    }}
+                  />
                 </div>
               </div>
               <div className={`flex items-end gap-[2px] h-3 ${isPlaying ? "" : "eq-paused"}`}>
@@ -148,10 +159,17 @@ export function QueueDrawer({
           ) : (
             <div className="space-y-0.5">
               {queue.map((track, idx) => (
-                <button
+                <div
                   key={`${track.uri}-${idx}`}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   onClick={() => onPlayTrack(track)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onPlayTrack(track);
+                    }
+                  }}
                   onContextMenu={(e) => {
                     if (onTrackContextMenu) {
                       e.preventDefault();
@@ -172,13 +190,21 @@ export function QueueDrawer({
                       {track.name}
                     </div>
                     <div className="text-[11px] text-[var(--text-secondary)] truncate">
-                      {track.artists}
+                      <ArtistLinks
+                        artistsText={track.artists}
+                        artistItems={track.artistItems}
+                        fallbackArtistId={track.artistId}
+                        onSelectArtist={(id, name) => {
+                          onSelectArtist?.(id, name);
+                          onClose();
+                        }}
+                      />
                     </div>
                   </div>
                   <span className="text-[11px] tabular-nums text-[var(--text-tertiary)]">
                     {formatDuration(track.durationMs)}
                   </span>
-                </button>
+                </div>
               ))}
             </div>
           )}

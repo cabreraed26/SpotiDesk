@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Disc3, Loader2, Play, User } from "lucide-react";
+import { Disc3, Play, User } from "lucide-react";
 import { SpotifyApiError, type SpotifyApiClient } from "../lib/spotifyApi";
 import type { SpotifyAlbumSimple, SpotifyArtist } from "../types/spotify";
 import { getBestImage } from "../lib/format";
+import { viewCache } from "../lib/viewCache";
 import { LazyCover } from "./LazyCover";
 
 interface LibraryViewProps {
   mode: "albums" | "artists";
   api: SpotifyApiClient;
-  onSelectAlbum: (albumId: string) => void;
+  onSelectAlbum: (album: SpotifyAlbumSimple, morphSourceEl?: HTMLElement | null) => void;
+  onSelectArtist: (artist: SpotifyArtist, morphSourceEl?: HTMLElement | null) => void;
   onPlayContext: (options: { contextUri: string; offsetPosition?: number }) => Promise<void>;
 }
 
@@ -16,30 +18,54 @@ export function LibraryView({
   mode,
   api,
   onSelectAlbum,
+  onSelectArtist,
   onPlayContext,
 }: LibraryViewProps) {
-  const [albums, setAlbums] = useState<SpotifyAlbumSimple[]>([]);
-  const [artists, setArtists] = useState<SpotifyArtist[]>([]);
-  const [total, setTotal] = useState<number>(0);
-  const [hasMore, setHasMore] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const cachedAlbums = mode === "albums" ? viewCache.savedAlbums : null;
+  const cachedArtists = mode === "artists" ? viewCache.followedArtists : null;
+
+  const [albums, setAlbums] = useState<SpotifyAlbumSimple[]>(
+    () => cachedAlbums?.items ?? []
+  );
+  const [artists, setArtists] = useState<SpotifyArtist[]>(
+    () => cachedArtists?.items ?? []
+  );
+  const [total, setTotal] = useState<number>(
+    () => (mode === "albums" ? cachedAlbums?.total : cachedArtists?.total) ?? 0
+  );
+  const [hasMore, setHasMore] = useState<boolean>(
+    () => (mode === "albums" ? cachedAlbums?.hasMore : cachedArtists?.hasMore) ?? false
+  );
+  const [isLoading, setIsLoading] = useState<boolean>(
+    () => (mode === "albums" ? !cachedAlbums : !cachedArtists)
+  );
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const offsetRef = useRef(0);
-  const cursorAfterRef = useRef<string | undefined>(undefined);
+  const offsetRef = useRef(cachedAlbums?.offset ?? 0);
+  const cursorAfterRef = useRef<string | undefined>(cachedArtists?.after);
 
   useEffect(() => {
     let cancelled = false;
-    offsetRef.current = 0;
-    cursorAfterRef.current = undefined;
-    setIsLoading(true);
-    setError(null);
-    setAlbums([]);
-    setArtists([]);
-    setTotal(0);
-    setHasMore(false);
+    const snapAlbums = mode === "albums" ? viewCache.savedAlbums : null;
+    const snapArtists = mode === "artists" ? viewCache.followedArtists : null;
 
+    setError(null);
+    if (mode === "albums") {
+      setAlbums(snapAlbums?.items ?? []);
+      setTotal(snapAlbums?.total ?? 0);
+      setHasMore(snapAlbums?.hasMore ?? false);
+      offsetRef.current = snapAlbums?.offset ?? 0;
+      setIsLoading(!snapAlbums);
+    } else {
+      setArtists(snapArtists?.items ?? []);
+      setTotal(snapArtists?.total ?? 0);
+      setHasMore(snapArtists?.hasMore ?? false);
+      cursorAfterRef.current = snapArtists?.after;
+      setIsLoading(!snapArtists);
+    }
+
+    // Revalidate cleanly in the background (0ms render when cached!)
     (async () => {
       try {
         if (mode === "albums") {
@@ -48,33 +74,56 @@ export function LibraryView({
           const items = (page.items ?? [])
             .map((entry) => entry?.album)
             .filter((a): a is SpotifyAlbumSimple => Boolean(a && a.id));
+          const nextTotal = page.total ?? items.length;
+          const nextOffset = (page.items ?? []).length;
+          const nextMore = Boolean(page.next);
+
           setAlbums(items);
-          setTotal(page.total ?? items.length);
-          offsetRef.current = (page.items ?? []).length;
-          setHasMore(Boolean(page.next));
+          setTotal(nextTotal);
+          offsetRef.current = nextOffset;
+          setHasMore(nextMore);
+          viewCache.savedAlbums = {
+            items,
+            total: nextTotal,
+            offset: nextOffset,
+            hasMore: nextMore,
+          };
         } else {
           const page = await api.getFollowedArtists(50);
           if (cancelled) return;
           const items = (page.items ?? []).filter(Boolean);
+          const nextTotal = page.total ?? items.length;
+          const nextAfter = page.cursors?.after ?? undefined;
+          const nextMore = Boolean(page.next && nextAfter);
+
           setArtists(items);
-          setTotal(page.total ?? items.length);
-          cursorAfterRef.current = page.cursors?.after ?? undefined;
-          setHasMore(Boolean(page.next && page.cursors?.after));
+          setTotal(nextTotal);
+          cursorAfterRef.current = nextAfter;
+          setHasMore(nextMore);
+          viewCache.followedArtists = {
+            items,
+            total: nextTotal,
+            after: nextAfter,
+            hasMore: nextMore,
+          };
         }
       } catch (err) {
         if (cancelled) return;
-        if (err instanceof SpotifyApiError && err.status === 403 && mode === "artists") {
-          setError(
-            "Cierra sesión y vuelve a conectar con Spotify desde Ajustes para conceder permiso de ver tus artistas seguidos."
-          );
-        } else {
-          setError(
-            err instanceof Error
-              ? err.message
-              : mode === "albums"
-                ? "No se pudieron cargar tus álbumes guardados."
-                : "No se pudieron cargar tus artistas seguidos."
-          );
+        const hasCache = mode === "albums" ? Boolean(snapAlbums) : Boolean(snapArtists);
+        if (!hasCache) {
+          if (err instanceof SpotifyApiError && err.status === 403 && mode === "artists") {
+            setError(
+              "Cierra sesión y vuelve a conectar con Spotify desde Ajustes para conceder permiso de ver tus artistas seguidos."
+            );
+          } else {
+            setError(
+              err instanceof Error
+                ? err.message
+                : mode === "albums"
+                  ? "No se pudieron cargar tus álbumes guardados."
+                  : "No se pudieron cargar tus artistas seguidos."
+            );
+          }
         }
       } finally {
         if (!cancelled) setIsLoading(false);
@@ -95,15 +144,39 @@ export function LibraryView({
         const items = (page.items ?? [])
           .map((entry) => entry?.album)
           .filter((a): a is SpotifyAlbumSimple => Boolean(a && a.id));
-        setAlbums((prev) => [...prev, ...items]);
-        offsetRef.current += (page.items ?? []).length;
-        setHasMore(Boolean(page.next));
+        const nextOffset = offsetRef.current + (page.items ?? []).length;
+        const nextMore = Boolean(page.next);
+
+        setAlbums((prev) => {
+          const merged = [...prev, ...items];
+          viewCache.savedAlbums = {
+            items: merged,
+            total: page.total ?? merged.length,
+            offset: nextOffset,
+            hasMore: nextMore,
+          };
+          return merged;
+        });
+        offsetRef.current = nextOffset;
+        setHasMore(nextMore);
       } else {
         const page = await api.getFollowedArtists(50, cursorAfterRef.current);
         const items = (page.items ?? []).filter(Boolean);
-        setArtists((prev) => [...prev, ...items]);
-        cursorAfterRef.current = page.cursors?.after ?? undefined;
-        setHasMore(Boolean(page.next && page.cursors?.after));
+        const nextAfter = page.cursors?.after ?? undefined;
+        const nextMore = Boolean(page.next && nextAfter);
+
+        setArtists((prev) => {
+          const merged = [...prev, ...items];
+          viewCache.followedArtists = {
+            items: merged,
+            total: page.total ?? merged.length,
+            after: nextAfter,
+            hasMore: nextMore,
+          };
+          return merged;
+        });
+        cursorAfterRef.current = nextAfter;
+        setHasMore(nextMore);
       }
     } catch {
       setHasMore(false);
@@ -113,7 +186,7 @@ export function LibraryView({
   }, [api, hasMore, isLoadingMore, mode]);
 
   return (
-    <div key={mode} className="anim-view-enter flex-1 overflow-y-auto px-8 pt-8 pb-32 space-y-8">
+    <div className="flex-1 overflow-y-auto px-8 pt-8 pb-32 space-y-8">
       <section className="flex items-end justify-between gap-4">
         <div>
           <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--text-tertiary)]">
@@ -131,8 +204,29 @@ export function LibraryView({
       </section>
 
       {isLoading ? (
-        <div className="py-20 flex items-center justify-center">
-          <Loader2 size={22} strokeWidth={1.5} className="animate-spin text-[var(--text-secondary)]" />
+        <div
+          className={
+            mode === "albums"
+              ? "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-5"
+              : "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-5"
+          }
+        >
+          {Array.from({ length: mode === "albums" ? 10 : 12 }).map((_, i) => (
+            <div
+              key={i}
+              className="p-3.5 rounded-2xl bg-[var(--bg-elevated)] border border-[var(--border-hairline)] animate-pulse"
+            >
+              <div
+                className={
+                  mode === "albums"
+                    ? "aspect-square rounded-xl bg-[var(--bg-card)] mb-3.5"
+                    : "w-28 h-28 mx-auto rounded-full bg-[var(--bg-card)] mb-3.5"
+                }
+              />
+              <div className="h-3.5 w-3/4 mx-auto rounded bg-[var(--bg-card)] mb-2" />
+              <div className="h-3 w-1/2 mx-auto rounded bg-[var(--bg-card)]" />
+            </div>
+          ))}
         </div>
       ) : error ? (
         <div className="max-w-[520px] p-5 rounded-2xl bg-[var(--bg-elevated)] border border-[var(--border-hairline)] text-[13px] leading-relaxed text-[var(--text-secondary)]">
@@ -152,10 +246,19 @@ export function LibraryView({
                 return (
                   <div
                     key={album.id}
-                    onClick={() => onSelectAlbum(album.id)}
+                    onClick={(e) => {
+                      const coverEl = e.currentTarget.querySelector<HTMLElement>(
+                        "[data-morph-cover]"
+                      );
+                      onSelectAlbum(album, coverEl);
+                    }}
                     className="group playlist-card-zoom p-3.5 rounded-2xl bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--border-subtle)] cursor-pointer"
                   >
-                    <div className="playlist-cover-zoom relative aspect-square mb-3.5">
+                    <div
+                      data-morph-cover
+                      data-album-cover={album.id}
+                      className="playlist-cover-zoom relative aspect-square mb-3.5 rounded-xl overflow-hidden"
+                    >
                       <LazyCover
                         src={getBestImage(album.images, "medium")}
                         alt={album.name}
@@ -212,35 +315,65 @@ export function LibraryView({
             {artists.map((artist) => {
               const avatar = getBestImage(artist.images, "medium");
               return (
-                <button
+                <div
                   key={artist.id}
-                  type="button"
-                  onClick={() => void onPlayContext({ contextUri: artist.uri })}
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => {
+                    const avatarEl = e.currentTarget.querySelector<HTMLElement>(
+                      "[data-morph-avatar]"
+                    );
+                    onSelectArtist(artist, avatarEl);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onSelectArtist(artist);
+                    }
+                  }}
                   className="group playlist-card-zoom p-4 rounded-2xl bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--border-subtle)] flex flex-col items-center text-center cursor-pointer"
                 >
-                  <div className="playlist-cover-zoom relative w-28 h-28 rounded-full overflow-hidden bg-[var(--bg-card)] border border-[var(--border-hairline)] flex items-center justify-center mb-3.5">
-                    {avatar ? (
-                      <img
-                        src={avatar}
-                        alt={artist.name}
-                        loading="lazy"
-                        decoding="async"
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <User size={30} strokeWidth={1.5} className="text-[var(--text-tertiary)]" />
-                    )}
-                    <span className="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white transition-opacity duration-200">
-                      <Play size={18} strokeWidth={1.8} fill="currentColor" />
-                    </span>
+                  <div className="relative mb-3.5">
+                    <div
+                      data-morph-avatar
+                      data-artist-cover={artist.id}
+                      className="playlist-cover-zoom w-28 h-28 rounded-full overflow-hidden bg-[var(--bg-card)] border border-[var(--border-hairline)] flex items-center justify-center"
+                    >
+                      {avatar ? (
+                        <img
+                          src={avatar}
+                          alt={artist.name}
+                          loading="lazy"
+                          decoding="async"
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <User
+                          size={30}
+                          strokeWidth={1.5}
+                          className="text-[var(--text-tertiary)]"
+                        />
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      aria-label={`Reproducir ${artist.name}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void onPlayContext({ contextUri: artist.uri });
+                      }}
+                      className="chrome-no-select absolute right-0 bottom-0 w-9 h-9 rounded-full bg-[var(--solid-bg)] text-[var(--solid-fg)] shadow-lg flex items-center justify-center opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 ease-apple cursor-pointer"
+                    >
+                      <Play size={14} strokeWidth={1.8} fill="currentColor" />
+                    </button>
                   </div>
                   <div className="text-[13.5px] font-medium text-[var(--text-primary)] truncate w-full tracking-[-0.01em]">
                     {artist.name}
                   </div>
                   <div className="text-[11.5px] text-[var(--text-tertiary)] mt-0.5">
-                    Artista
+                    Artista · Ver álbumes
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>

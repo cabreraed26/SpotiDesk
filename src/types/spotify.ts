@@ -142,11 +142,18 @@ export interface SpotifyPlaybackStateResponse {
   item: SpotifyTrack | null;
 }
 
+export interface TrackArtistRef {
+  id: string;
+  name: string;
+}
+
 export interface UnifiedTrack {
   id: string;
   uri: string;
   name: string;
   artists: string;
+  artistId?: string;
+  artistItems?: TrackArtistRef[];
   albumName: string;
   albumId?: string;
   albumImage?: string;

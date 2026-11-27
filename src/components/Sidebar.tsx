@@ -1,5 +1,9 @@
 import { Disc3, Heart, Home, Lock, Plus, Search, Users } from "lucide-react";
-import type { SpotifyPlaylist } from "../types/spotify";
+import type {
+  SpotifyAlbumSimple,
+  SpotifyArtist,
+  SpotifyPlaylist,
+} from "../types/spotify";
 import { getBestImage, getPlaylistTrackCount } from "../lib/format";
 import { LazyCover } from "./LazyCover";
 
@@ -9,8 +13,9 @@ export type AppView =
   | { kind: "liked" }
   | { kind: "albums" }
   | { kind: "artists" }
+  | { kind: "artist"; id: string; seedArtist?: SpotifyArtist }
   | { kind: "playlist"; id: string }
-  | { kind: "album"; id: string };
+  | { kind: "album"; id: string; seedAlbum?: SpotifyAlbumSimple };
 
 interface SidebarProps {
   activeView: AppView;

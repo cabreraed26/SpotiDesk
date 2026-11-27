@@ -22,6 +22,7 @@ import type { UnifiedTrack } from "../types/spotify";
 import { useLyrics } from "../hooks/useLyrics";
 import { formatDuration } from "../lib/format";
 import { LazyCover } from "./LazyCover";
+import { ArtistLinks } from "./ArtistLinks";
 import { PlayWaterDropEffect, StopShockEffect } from "./KineticEffects";
 
 export type TrackTransitionDir = "next" | "prev";
@@ -53,6 +54,7 @@ interface NowPlayingStageProps {
   onToggleShuffle: () => void;
   onCycleRepeat: () => void;
   onPlayQueueTrack: (uri: string) => void;
+  onSelectArtist?: (artistId: string, artistName?: string) => void;
 }
 
 export function NowPlayingStage({
@@ -81,6 +83,7 @@ export function NowPlayingStage({
   onToggleShuffle,
   onCycleRepeat,
   onPlayQueueTrack,
+  onSelectArtist,
 }: NowPlayingStageProps) {
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubPosition, setScrubPosition] = useState(0);
@@ -314,7 +317,12 @@ export function NowPlayingStage({
                     {currentTrack.name}
                   </div>
                   <div className="text-[13px] text-[var(--text-secondary)] truncate">
-                    {currentTrack.artists}
+                    <ArtistLinks
+                      artistsText={currentTrack.artists}
+                      artistItems={currentTrack.artistItems}
+                      fallbackArtistId={currentTrack.artistId}
+                      onSelectArtist={onSelectArtist}
+                    />
                   </div>
                 </div>
                 <div className="chrome-no-select flex items-center justify-center gap-5 pt-1">
@@ -430,10 +438,17 @@ export function NowPlayingStage({
 
                 <div className="max-h-[340px] overflow-y-auto pr-1 space-y-1">
                   {upcomingTracks.map((t, i) => (
-                    <button
+                    <div
                       key={`${t.uri}-${i}`}
-                      type="button"
+                      role="button"
+                      tabIndex={0}
                       onClick={() => onPlayQueueTrack(t.uri)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onPlayQueueTrack(t.uri);
+                        }
+                      }}
                       className="w-full p-2.5 rounded-xl flex items-center gap-3 text-left hover:bg-[var(--bg-hover)] transition-colors cursor-pointer"
                     >
                       <LazyCover
@@ -448,13 +463,18 @@ export function NowPlayingStage({
                           {t.name}
                         </div>
                         <div className="text-[12px] text-[var(--text-secondary)] truncate">
-                          {t.artists}
+                          <ArtistLinks
+                            artistsText={t.artists}
+                            artistItems={t.artistItems}
+                            fallbackArtistId={t.artistId}
+                            onSelectArtist={onSelectArtist}
+                          />
                         </div>
                       </div>
                       <span className="text-[11.5px] tabular-nums text-[var(--text-tertiary)]">
                         {formatDuration(t.durationMs)}
                       </span>
-                    </button>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -489,7 +509,12 @@ export function NowPlayingStage({
                         width: "fit-content",
                       }}
                     >
-                      {currentTrack.artists}
+                      <ArtistLinks
+                        artistsText={currentTrack.artists}
+                        artistItems={currentTrack.artistItems}
+                        fallbackArtistId={currentTrack.artistId}
+                        onSelectArtist={onSelectArtist}
+                      />
                     </p>
                   </div>
 

@@ -239,6 +239,28 @@ export class SpotifyApiClient {
     return this.request(`/albums/${encodeURIComponent(albumId)}`);
   }
 
+  getArtist(artistId: string): Promise<SpotifyArtist> {
+    return this.request<SpotifyArtist>(`/artists/${encodeURIComponent(artistId)}`);
+  }
+
+  getArtistAlbums(
+    artistId: string,
+    limit = 10,
+    offset = 0,
+    includeGroups = "album,single"
+  ): Promise<SpotifyPaging<SpotifyAlbumSimple>> {
+    // Spotify Web API >= Feb 2026 Development Mode caps limit at 10
+    const safeLimit = Math.max(1, Math.min(limit, 10));
+    const params = new URLSearchParams({
+      include_groups: includeGroups,
+      limit: String(safeLimit),
+      offset: String(Math.max(0, offset)),
+    });
+    return this.request<SpotifyPaging<SpotifyAlbumSimple>>(
+      `/artists/${encodeURIComponent(artistId)}/albums?${params.toString()}`
+    );
+  }
+
   getArtistTopTracks(artistId: string): Promise<{ tracks: SpotifyTrack[] }> {
     return this.request(`/artists/${encodeURIComponent(artistId)}/top-tracks`);
   }

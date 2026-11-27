@@ -4,6 +4,7 @@ import { Clock3, MoreHorizontal, Pause, Play } from "lucide-react";
 import type { UnifiedTrack } from "../types/spotify";
 import { formatDuration } from "../lib/format";
 import { LazyCover } from "./LazyCover";
+import { ArtistLinks } from "./ArtistLinks";
 
 interface VirtualizedTrackListProps {
   tracks: UnifiedTrack[];
@@ -17,6 +18,7 @@ interface VirtualizedTrackListProps {
   onPlayTrack: (track: UnifiedTrack, index: number) => void;
   onTogglePlay: () => void;
   onSelectAlbum?: (albumId: string) => void;
+  onSelectArtist?: (artistId: string, artistName?: string) => void;
   onTrackContextMenu?: (e: React.MouseEvent, track: UnifiedTrack, index: number) => void;
   headerSlot?: React.ReactNode;
 }
@@ -35,6 +37,7 @@ export function VirtualizedTrackList({
   onPlayTrack,
   onTogglePlay,
   onSelectAlbum,
+  onSelectArtist,
   onTrackContextMenu,
   headerSlot,
 }: VirtualizedTrackListProps) {
@@ -196,7 +199,12 @@ export function VirtualizedTrackList({
                         {track.name}
                       </div>
                       <div className="text-[12px] truncate text-[var(--text-secondary)]">
-                        {track.artists}
+                        <ArtistLinks
+                          artistsText={track.artists}
+                          artistItems={track.artistItems}
+                          fallbackArtistId={track.artistId}
+                          onSelectArtist={onSelectArtist}
+                        />
                       </div>
                     </div>
                   </div>

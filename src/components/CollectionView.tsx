@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Heart, Loader2, Play, Shuffle } from "lucide-react";
+import { ChevronLeft, Heart, Loader2, Play, Shuffle } from "lucide-react";
 import { SpotifyApiError, type SpotifyApiClient } from "../lib/spotifyApi";
 import type {
+  SpotifyAlbumSimple,
+  SpotifyArtist,
   SpotifyPlaylist,
   SpotifyPlaylistTrackItem,
   UnifiedTrack,
@@ -12,18 +14,21 @@ import {
   getPlaylistTrackCount,
   normalizeTrack,
 } from "../lib/format";
+import { viewCache } from "../lib/viewCache";
 import { LazyCover } from "./LazyCover";
 import { VirtualizedTrackList } from "./VirtualizedTrackList";
 
 export type CollectionTarget =
   | { kind: "liked" }
   | { kind: "playlist"; id: string }
-  | { kind: "album"; id: string };
+  | { kind: "album"; id: string; seedAlbum?: SpotifyAlbumSimple };
 
 interface CollectionMeta {
   badge: string;
   title: string;
   subtitle: string;
+  albumArtists?: SpotifyArtist[];
+  year?: string;
   description?: string;
   coverUrl?: string;
   contextUri?: string;
@@ -35,6 +40,8 @@ interface CollectionViewProps {
   target: CollectionTarget;
   api: SpotifyApiClient;
   cachedPlaylist?: SpotifyPlaylist;
+  canGoBack?: boolean;
+  onGoBack?: () => void;
   currentTrackUri?: string;
   activeContextUri?: string | null;
   sdkWindowTracks?: UnifiedTrack[];
@@ -48,9 +55,60 @@ interface CollectionViewProps {
   onTogglePlay: () => void;
   onToggleShuffle: () => Promise<void>;
   shuffle: boolean;
-  onSelectAlbum: (albumId: string) => void;
+  onSelectAlbum: (album: SpotifyAlbumSimple | string, morphSourceEl?: HTMLElement | null) => void;
+  onSelectArtist?: (artist: SpotifyArtist) => void;
   onTrackContextMenu?: (e: React.MouseEvent, track: UnifiedTrack, index?: number) => void;
   onRestrictedPlaylist?: (playlistName: string) => void;
+}
+
+function buildAlbumMeta(album: SpotifyAlbumSimple, fallbackTrackCount = 0): CollectionMeta {
+  const year = album.release_date?.slice(0, 4);
+  const badge =
+    album.album_type === "single"
+      ? "SENCILLO"
+      : album.album_type === "compilation"
+        ? "RECOPILACIÓN"
+        : "ÁLBUM";
+  const artistsText = (album.artists ?? []).map((a) => a.name).join(", ");
+  return {
+    badge,
+    title: album.name,
+    subtitle: artistsText,
+    albumArtists: album.artists ?? [],
+    year,
+    coverUrl: getBestImage(album.images, "large"),
+    contextUri: album.uri,
+    totalTracks: album.total_tracks ?? fallbackTrackCount,
+  };
+}
+
+function resolveInitialAlbumState(target: CollectionTarget): {
+  meta: CollectionMeta | null;
+  tracks: UnifiedTrack[];
+  isLoading: boolean;
+  isTracksLoading: boolean;
+} {
+  if (target.kind !== "album") {
+    return { meta: null, tracks: [], isLoading: true, isTracksLoading: false };
+  }
+  const cached = viewCache.getAlbum(target.id);
+  if (cached) {
+    return {
+      meta: buildAlbumMeta(cached.album, cached.tracks.length),
+      tracks: cached.tracks,
+      isLoading: false,
+      isTracksLoading: false,
+    };
+  }
+  if (target.seedAlbum) {
+    return {
+      meta: buildAlbumMeta(target.seedAlbum),
+      tracks: [],
+      isLoading: false,
+      isTracksLoading: true,
+    };
+  }
+  return { meta: null, tracks: [], isLoading: true, isTracksLoading: false };
 }
 
 function extractPlaylistTracks(entries: SpotifyPlaylistTrackItem[] | undefined): UnifiedTrack[] {
@@ -64,6 +122,8 @@ export function CollectionView({
   target,
   api,
   cachedPlaylist,
+  canGoBack = false,
+  onGoBack,
   currentTrackUri,
   activeContextUri,
   sdkWindowTracks = [],
@@ -73,18 +133,23 @@ export function CollectionView({
   onToggleShuffle,
   shuffle,
   onSelectAlbum,
+  onSelectArtist,
   onTrackContextMenu,
   onRestrictedPlaylist,
 }: CollectionViewProps) {
-  const [meta, setMeta] = useState<CollectionMeta | null>(null);
-  const [tracks, setTracks] = useState<UnifiedTrack[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const initial = resolveInitialAlbumState(target);
+  const [meta, setMeta] = useState<CollectionMeta | null>(() => initial.meta);
+  const [tracks, setTracks] = useState<UnifiedTrack[]>(() => initial.tracks);
+  const [isLoading, setIsLoading] = useState<boolean>(() => initial.isLoading);
+  const [isTracksLoading, setIsTracksLoading] = useState<boolean>(() => initial.isTracksLoading);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [isRestrictedPlaylist, setIsRestrictedPlaylist] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const offsetRef = useRef(0);
+  const targetRef = useRef(target);
+  targetRef.current = target;
   const cachedPlaylistRef = useRef<SpotifyPlaylist | undefined>(cachedPlaylist);
   cachedPlaylistRef.current = cachedPlaylist;
   const onRestrictedRef = useRef(onRestrictedPlaylist);
@@ -95,17 +160,28 @@ export function CollectionView({
   // Initial load for the selected collection
   useEffect(() => {
     let cancelled = false;
+    const currentTarget = targetRef.current;
     offsetRef.current = 0;
-    setIsLoading(true);
     setError(null);
     setIsRestrictedPlaylist(false);
-    setTracks([]);
-    setMeta(null);
     setHasMore(false);
+
+    if (currentTarget.kind === "album") {
+      const snap = resolveInitialAlbumState(currentTarget);
+      setMeta(snap.meta);
+      setTracks(snap.tracks);
+      setIsLoading(snap.isLoading);
+      setIsTracksLoading(snap.isTracksLoading);
+    } else {
+      setIsLoading(true);
+      setIsTracksLoading(false);
+      setTracks([]);
+      setMeta(null);
+    }
 
     (async () => {
       try {
-        if (target.kind === "liked") {
+        if (currentTarget.kind === "liked") {
           const page = await api.getSavedTracks(50, 0);
           if (cancelled) return;
           const items = (page.items ?? [])
@@ -122,11 +198,11 @@ export function CollectionView({
           setTracks(items);
           offsetRef.current = (page.items ?? []).length;
           setHasMore(Boolean(page.next));
-        } else if (target.kind === "playlist") {
+        } else if (currentTarget.kind === "playlist") {
           let playlist: SpotifyPlaylist | undefined = cachedPlaylistRef.current;
 
           try {
-            playlist = await api.getPlaylist(target.id);
+            playlist = await api.getPlaylist(currentTarget.id);
           } catch {
             // Fall back to cached playlist metadata from /me/playlists
           }
@@ -163,7 +239,7 @@ export function CollectionView({
           }
 
           try {
-            const page = await api.getPlaylistTracks(target.id, 100, 0);
+            const page = await api.getPlaylistTracks(currentTarget.id, 100, 0);
             if (cancelled) return;
             const parsed = extractPlaylistTracks(page.items);
             setTracks(parsed);
@@ -189,48 +265,51 @@ export function CollectionView({
               );
             }
           }
-        } else if (target.kind === "album") {
-          const album = await api.getAlbum(target.id);
+        } else if (currentTarget.kind === "album") {
+          const album = await api.getAlbum(currentTarget.id);
           if (cancelled) return;
           const coverSmall = getBestImage(album.images, "small");
           const coverLarge = getBestImage(album.images, "large");
-          const items: UnifiedTrack[] = (album.tracks?.items ?? []).map((t) => ({
-            id: t.id || t.uri,
-            uri: t.uri,
-            name: t.name,
-            artists: (t.artists ?? []).map((a) => a.name).join(", "),
-            albumName: album.name,
-            albumId: album.id,
-            albumImage: coverSmall,
-            albumImageLarge: coverLarge,
-            durationMs: t.duration_ms ?? 0,
-          }));
-          const year = album.release_date?.slice(0, 4);
-          setMeta({
-            badge: album.album_type?.toUpperCase() || "ÁLBUM",
-            title: album.name,
-            subtitle: `${(album.artists ?? []).map((a) => a.name).join(", ")}${year ? ` · ${year}` : ""}`,
-            coverUrl: coverLarge,
-            contextUri: album.uri,
-            totalTracks: album.total_tracks ?? items.length,
+          const items: UnifiedTrack[] = (album.tracks?.items ?? []).map((t) => {
+            const artistItems = (t.artists ?? [])
+              .filter((a) => Boolean(a && a.id && a.name))
+              .map((a) => ({ id: a.id, name: a.name }));
+            return {
+              id: t.id || t.uri,
+              uri: t.uri,
+              name: t.name,
+              artists: (t.artists ?? []).map((a) => a.name).join(", "),
+              artistId: artistItems[0]?.id ?? album.artists?.[0]?.id,
+              artistItems,
+              albumName: album.name,
+              albumId: album.id,
+              albumImage: coverSmall,
+              albumImageLarge: coverLarge,
+              durationMs: t.duration_ms ?? 0,
+            };
           });
+          setMeta(buildAlbumMeta(album, items.length));
           setTracks(items);
           offsetRef.current = items.length;
           setHasMore(false);
+          viewCache.setAlbum(currentTarget.id, { album, tracks: items });
         }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Error cargando la colección.");
         }
       } finally {
-        if (!cancelled) setIsLoading(false);
+        if (!cancelled) {
+          setIsLoading(false);
+          setIsTracksLoading(false);
+        }
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [api, targetKey, target]);
+  }, [api, targetKey]);
 
   const handleLoadMore = useCallback(async () => {
     if (isLoadingMore || !hasMore || isRestrictedPlaylist) return;
@@ -331,8 +410,23 @@ export function CollectionView({
     );
   }
 
+  const isAlbumView = target.kind === "album";
+
   const headerSlot = (
-    <section key={targetKey} className="pt-8 pb-7 space-y-6">
+    <section key={targetKey} className={`${canGoBack ? "pt-5" : "pt-8"} pb-7 space-y-6`}>
+      {canGoBack && onGoBack && (
+        <div className="chrome-no-select flex items-center">
+          <button
+            type="button"
+            onClick={onGoBack}
+            className="h-8 pl-2 pr-3.5 rounded-full bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] border border-[var(--border-hairline)] text-[12px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] inline-flex items-center gap-1 transition-all duration-200 ease-apple active:scale-95 cursor-pointer"
+          >
+            <ChevronLeft size={14} strokeWidth={1.7} />
+            Volver
+          </button>
+        </div>
+      )}
+
       <div className="flex flex-col sm:flex-row sm:items-end gap-7">
         {meta.isLiked ? (
           <div
@@ -343,7 +437,8 @@ export function CollectionView({
           </div>
         ) : (
           <div
-            className="anim-artwork-reveal shrink-0 rounded-2xl"
+            data-album-hero={isAlbumView ? target.id : undefined}
+            className={`${isAlbumView ? "" : "anim-artwork-reveal"} shrink-0 rounded-2xl overflow-hidden`}
             style={{ boxShadow: "var(--shadow-artwork)" }}
           >
             <LazyCover
@@ -357,25 +452,52 @@ export function CollectionView({
         )}
 
         <div className="min-w-0 flex-1 space-y-2.5">
-          <span className="anim-stagger-1 inline-block text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--text-tertiary)]">
+          <span className="inline-block text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--text-tertiary)]">
             {meta.badge}
           </span>
 
-          <h1 className="anim-stagger-2 text-[32px] md:text-[38px] font-semibold tracking-[-0.03em] leading-[1.08] text-[var(--text-primary)] line-clamp-2">
+          <h1 className="text-[32px] md:text-[38px] font-semibold tracking-[-0.03em] leading-[1.08] text-[var(--text-primary)] line-clamp-2">
             {meta.title}
           </h1>
 
           {meta.description && (
             <p
-              className="anim-stagger-3 text-[13px] text-[var(--text-secondary)] line-clamp-2 max-w-[600px]"
+              className="text-[13px] text-[var(--text-secondary)] line-clamp-2 max-w-[600px]"
               dangerouslySetInnerHTML={{
                 __html: meta.description.replace(/<a [^>]*>(.*?)<\/a>/g, "$1"),
               }}
             />
           )}
 
-          <div className="anim-stagger-3 flex flex-wrap items-center gap-2 text-[12.5px] text-[var(--text-secondary)] tabular-nums">
-            <span className="font-medium text-[var(--text-primary)]">{meta.subtitle}</span>
+          <div className="flex flex-wrap items-center gap-2 text-[12.5px] text-[var(--text-secondary)] tabular-nums">
+            {meta.albumArtists && meta.albumArtists.length > 0 && onSelectArtist ? (
+              <span className="inline-flex flex-wrap items-center gap-1 font-medium text-[var(--text-primary)]">
+                {meta.albumArtists.map((artist, idx) => (
+                  <span key={artist.id || artist.name} className="inline-flex items-center">
+                    {idx > 0 && <span className="mr-1 text-[var(--text-secondary)]">,</span>}
+                    {artist.id ? (
+                      <button
+                        type="button"
+                        onClick={() => onSelectArtist(artist)}
+                        className="hover:underline underline-offset-4 cursor-pointer"
+                      >
+                        {artist.name}
+                      </button>
+                    ) : (
+                      <span>{artist.name}</span>
+                    )}
+                  </span>
+                ))}
+              </span>
+            ) : (
+              <span className="font-medium text-[var(--text-primary)]">{meta.subtitle}</span>
+            )}
+            {meta.year && (
+              <>
+                <span>·</span>
+                <span>{meta.year}</span>
+              </>
+            )}
             {meta.totalTracks > 0 && (
               <>
                 <span>·</span>
@@ -390,7 +512,7 @@ export function CollectionView({
             )}
           </div>
 
-          <div className="anim-stagger-4 pt-3 flex items-center gap-3">
+          <div className="pt-3 flex items-center gap-3">
             <button
               type="button"
               onClick={() => void handlePlayAll()}
@@ -416,6 +538,26 @@ export function CollectionView({
     </section>
   );
 
+  if (isTracksLoading && displayedTracks.length === 0) {
+    return (
+      <div className="flex-1 overflow-y-auto px-8 pb-32">
+        {headerSlot}
+        <div className="mt-2 divide-y divide-[var(--border-hairline)] border-t border-[var(--border-hairline)]">
+          {Array.from({ length: Math.min(Math.max(meta.totalTracks || 6, 4), 10) }).map((_, i) => (
+            <div key={i} className="h-[54px] px-3 flex items-center gap-4 animate-pulse">
+              <div className="w-5 h-3 rounded bg-[var(--bg-card)]" />
+              <div className="flex-1 space-y-2">
+                <div className="h-3.5 w-48 rounded bg-[var(--bg-card)]" />
+                <div className="h-2.5 w-28 rounded bg-[var(--bg-card)]" />
+              </div>
+              <div className="w-10 h-3 rounded bg-[var(--bg-card)]" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   if (isRestrictedPlaylist && displayedTracks.length === 0) {
     return (
       <div className="flex-1 overflow-y-auto px-8 pb-32">
@@ -436,7 +578,17 @@ export function CollectionView({
       onLoadMore={() => void handleLoadMore()}
       onPlayTrack={(track, idx) => void handlePlayTrack(track, idx)}
       onTogglePlay={onTogglePlay}
-      onSelectAlbum={onSelectAlbum}
+      onSelectAlbum={(albumId) => onSelectAlbum(albumId)}
+      onSelectArtist={
+        onSelectArtist
+          ? (artistId, artistName) =>
+              onSelectArtist({
+                id: artistId,
+                name: artistName || "Artista",
+                uri: `spotify:artist:${artistId}`,
+              })
+          : undefined
+      }
       onTrackContextMenu={onTrackContextMenu}
       headerSlot={headerSlot}
     />

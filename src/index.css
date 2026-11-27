@@ -893,8 +893,118 @@ html[data-window="notch"] #root {
 
 ::view-transition-old(root),
 ::view-transition-new(root) {
-  animation-duration: 320ms;
+  animation-duration: 280ms;
   animation-timing-function: var(--ease-apple);
+}
+
+/* Keep persistent app chrome (TitleBar, Sidebar, PlayerBar) rock-steady during in-app view transitions */
+:root[data-nav-dir]::view-transition-old(root),
+:root[data-nav-dir]::view-transition-new(root) {
+  animation: none;
+}
+
+/* Shared-element artwork morph (Artist portrait / Album cover gliding into editorial header) */
+::view-transition-group(hero-artwork-morph) {
+  animation-duration: 380ms;
+  animation-timing-function: var(--ease-apple);
+  z-index: 45;
+}
+
+::view-transition-old(hero-artwork-morph),
+::view-transition-new(hero-artwork-morph) {
+  height: 100%;
+  width: 100%;
+  object-fit: cover;
+  overflow: clip;
+}
+
+/* Seamless directional canvas glides (Forward / Back / Tab switch) */
+@keyframes canvasForwardOut {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(-18px, 0, 0) scale(0.992);
+  }
+}
+
+@keyframes canvasForwardIn {
+  from {
+    opacity: 0;
+    transform: translate3d(22px, 0, 0) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes canvasBackOut {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(18px, 0, 0) scale(0.992);
+  }
+}
+
+@keyframes canvasBackIn {
+  from {
+    opacity: 0;
+    transform: translate3d(-22px, 0, 0) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes canvasFadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes canvasFadeIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+:root[data-nav-dir="forward"]::view-transition-old(main-canvas) {
+  animation: canvasForwardOut 220ms var(--ease-apple) both;
+}
+
+:root[data-nav-dir="forward"]::view-transition-new(main-canvas) {
+  animation: canvasForwardIn 320ms var(--ease-apple) both;
+}
+
+:root[data-nav-dir="back"]::view-transition-old(main-canvas) {
+  animation: canvasBackOut 220ms var(--ease-apple) both;
+}
+
+:root[data-nav-dir="back"]::view-transition-new(main-canvas) {
+  animation: canvasBackIn 320ms var(--ease-apple) both;
+}
+
+:root[data-nav-dir="tab"]::view-transition-old(main-canvas) {
+  animation: canvasFadeOut 180ms var(--ease-apple) both;
+}
+
+:root[data-nav-dir="tab"]::view-transition-new(main-canvas) {
+  animation: canvasFadeIn 260ms var(--ease-apple) both;
 }
 
 @media (prefers-reduced-motion: reduce) {

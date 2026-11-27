@@ -219,11 +219,16 @@ export function useSpotifyPlayer({
         const sorted = [...imgs].sort((a, b) => (a.width ?? 640) - (b.width ?? 640));
         const small = sorted[0]?.url;
         const large = sorted[sorted.length - 1]?.url;
+        const artistItems = (state.item.artists ?? [])
+          .filter((a) => Boolean(a && a.id && a.name))
+          .map((a) => ({ id: a.id, name: a.name }));
         const nextTrack: UnifiedTrack = {
           id: state.item.id || state.item.uri,
           uri: state.item.uri,
           name: state.item.name,
           artists: (state.item.artists ?? []).map((a) => a.name).join(", "),
+          artistId: artistItems[0]?.id,
+          artistItems,
           albumName: state.item.album?.name ?? "",
           albumId: state.item.album?.id,
           albumImage: small,
@@ -237,7 +242,8 @@ export function useSpotifyPlayer({
           prev &&
           prev.uri === nextTrack.uri &&
           prev.name === nextTrack.name &&
-          prev.albumImage === nextTrack.albumImage
+          prev.albumImage === nextTrack.albumImage &&
+          Boolean(prev.artistItems?.length) === Boolean(nextTrack.artistItems?.length)
             ? prev
             : nextTrack
         );
@@ -403,12 +409,26 @@ export function useSpotifyPlayer({
           ): UnifiedTrack => {
             const imgs = t.album?.images ?? [];
             const sorted = [...imgs].sort((a, b) => (a.width ?? 640) - (b.width ?? 640));
+            const artistItems = (t.artists ?? [])
+              .map((a) => {
+                const raw = a as { id?: string; uri?: string; url?: string; name: string };
+                const match = (raw.uri || raw.url || "").match(/artist[:/]([A-Za-z0-9]+)/);
+                const id = raw.id || match?.[1] || "";
+                return id ? { id, name: raw.name } : null;
+              })
+              .filter((x): x is { id: string; name: string } => Boolean(x));
+            const albumId = t.album?.uri?.startsWith("spotify:album:")
+              ? t.album.uri.split(":")[2]
+              : undefined;
             return {
               id: t.id ?? t.uri,
               uri: t.uri,
               name: t.name,
               artists: (t.artists ?? []).map((a) => a.name).join(", "),
+              artistId: artistItems[0]?.id,
+              artistItems,
               albumName: t.album?.name ?? "",
+              albumId,
               albumImage: sorted[0]?.url,
               albumImageLarge: sorted[sorted.length - 1]?.url,
               durationMs: t.duration_ms || 0,
@@ -430,7 +450,8 @@ export function useSpotifyPlayer({
               prev &&
               prev.uri === mappedCurrent.uri &&
               prev.name === mappedCurrent.name &&
-              prev.albumImage === mappedCurrent.albumImage
+              prev.albumImage === mappedCurrent.albumImage &&
+              Boolean(prev.artistItems?.length) === Boolean(mappedCurrent.artistItems?.length)
                 ? prev
                 : mappedCurrent
             );

@@ -24,6 +24,7 @@ import type { SpotifyDevice, UnifiedTrack } from "../types/spotify";
 import type { TrackTransitionDir } from "./NowPlayingStage";
 import { formatDuration } from "../lib/format";
 import { LazyCover } from "./LazyCover";
+import { ArtistLinks } from "./ArtistLinks";
 import { PlayWaterDropEffect, StopShockEffect } from "./KineticEffects";
 
 interface PlayerBarProps {
@@ -55,6 +56,7 @@ interface PlayerBarProps {
   onCycleRepeat: () => void;
   onRefreshDevices: () => void;
   onTransferDevice: (deviceId: string) => void;
+  onSelectArtist?: (artistId: string, artistName?: string) => void;
 }
 
 function DeviceIcon({ type }: { type: string }) {
@@ -93,6 +95,7 @@ export function PlayerBar({
   onCycleRepeat,
   onRefreshDevices,
   onTransferDevice,
+  onSelectArtist,
 }: PlayerBarProps) {
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubPosition, setScrubPosition] = useState(0);
@@ -232,7 +235,16 @@ export function PlayerBar({
                 width: "fit-content",
               }}
             >
-              {currentTrack?.artists || "Selecciona una canción para comenzar"}
+              {currentTrack ? (
+                <ArtistLinks
+                  artistsText={currentTrack.artists}
+                  artistItems={currentTrack.artistItems}
+                  fallbackArtistId={currentTrack.artistId}
+                  onSelectArtist={onSelectArtist}
+                />
+              ) : (
+                "Selecciona una canción para comenzar"
+              )}
             </div>
           </div>
 

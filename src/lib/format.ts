@@ -54,11 +54,16 @@ export function getBestImage(
 }
 
 export function normalizeTrack(track: SpotifyTrack): UnifiedTrack {
+  const artistItems = (track.artists ?? [])
+    .filter((a) => Boolean(a && a.id && a.name))
+    .map((a) => ({ id: a.id, name: a.name }));
   return {
     id: track.id || track.uri,
     uri: track.uri,
     name: track.name || "Sin título",
     artists: (track.artists ?? []).map((a) => a.name).join(", ") || "Artista desconocido",
+    artistId: artistItems[0]?.id,
+    artistItems,
     albumName: track.album?.name ?? "",
     albumId: track.album?.id,
     albumImage: getBestImage(track.album?.images, "small"),

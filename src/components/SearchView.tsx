@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, MoreHorizontal, Pause, Play, Search, User, X } from "lucide-react";
 import type { SpotifyApiClient } from "../lib/spotifyApi";
 import type {
@@ -8,7 +8,9 @@ import type {
   UnifiedTrack,
 } from "../types/spotify";
 import { formatDuration, getBestImage, normalizeTrack } from "../lib/format";
+import { viewCache, type SearchFilterTab } from "../lib/viewCache";
 import { LazyCover } from "./LazyCover";
+import { ArtistLinks } from "./ArtistLinks";
 
 interface SearchViewProps {
   api: SpotifyApiClient;
@@ -21,8 +23,36 @@ interface SearchViewProps {
     offsetUri?: string;
   }) => Promise<void>;
   onTogglePlay: () => void;
-  onSelectAlbum: (albumId: string) => void;
+  onSelectAlbum: (album: SpotifyAlbumSimple | string, morphSourceEl?: HTMLElement | null) => void;
+  onSelectArtist: (
+    artist: SpotifyArtist | string,
+    morphSourceEl?: HTMLElement | null,
+    fallbackName?: string
+  ) => void;
   onTrackContextMenu?: (e: React.MouseEvent, track: UnifiedTrack) => void;
+}
+
+function normalizeFold(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function rankArtistsByQuery(list: SpotifyArtist[], rawQuery: string): SpotifyArtist[] {
+  const q = normalizeFold(rawQuery);
+  if (!q) return list;
+
+  const score = (artist: SpotifyArtist): number => {
+    const name = normalizeFold(artist.name);
+    if (name === q) return 0;
+    if (name.startsWith(q)) return 1;
+    if (name.includes(q)) return 2;
+    return 3;
+  };
+
+  return [...list].sort((a, b) => score(a) - score(b));
 }
 
 export function SearchView({
@@ -32,23 +62,49 @@ export function SearchView({
   onPlayContext,
   onTogglePlay,
   onSelectAlbum,
+  onSelectArtist,
   onTrackContextMenu,
 }: SearchViewProps) {
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SpotifySearchResults | null>(null);
+  const initialCache = viewCache.lastSearch;
+  const [query, setQuery] = useState(() => initialCache?.query ?? "");
+  const [results, setResults] = useState<SpotifySearchResults | null>(
+    () => initialCache?.results ?? null
+  );
+  const [activeFilter, setActiveFilter] = useState<SearchFilterTab>(
+    () => initialCache?.filter ?? "all"
+  );
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    inputRef.current?.focus();
+    if (!initialCache) {
+      inputRef.current?.focus();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 300ms debounced instant search
+  // Keep filter persisted in viewCache for seamless Back transitions
+  useEffect(() => {
+    if (viewCache.lastSearch) {
+      viewCache.lastSearch = { ...viewCache.lastSearch, filter: activeFilter };
+    }
+  }, [activeFilter]);
+
+  // 280ms debounced instant search (Artists, Albums & Tracks)
   useEffect(() => {
     const trimmed = query.trim();
     if (!trimmed) {
       setResults(null);
+      setIsSearching(false);
+      setError(null);
+      viewCache.lastSearch = null;
+      return;
+    }
+
+    // Reuse cached results immediately if returning to the exact same query
+    if (viewCache.lastSearch && viewCache.lastSearch.query === trimmed) {
+      setResults(viewCache.lastSearch.results);
       setIsSearching(false);
       setError(null);
       return;
@@ -60,9 +116,14 @@ export function SearchView({
 
     const timer = window.setTimeout(async () => {
       try {
-        const data = await api.search(trimmed, 8);
+        const data = await api.search(trimmed, 10);
         if (!cancelled) {
           setResults(data);
+          viewCache.lastSearch = {
+            query: trimmed,
+            results: data,
+            filter: activeFilter,
+          };
         }
       } catch (err) {
         if (!cancelled) {
@@ -71,7 +132,7 @@ export function SearchView({
       } finally {
         if (!cancelled) setIsSearching(false);
       }
-    }, 300);
+    }, 280);
 
     return () => {
       cancelled = true;
@@ -79,9 +140,18 @@ export function SearchView({
     };
   }, [api, query]);
 
-  const tracks = (results?.tracks?.items ?? []).filter(Boolean).map(normalizeTrack);
-  const albums = (results?.albums?.items ?? []).filter(Boolean);
-  const artists = (results?.artists?.items ?? []).filter(Boolean);
+  const tracks = useMemo(
+    () => (results?.tracks?.items ?? []).filter(Boolean).map(normalizeTrack),
+    [results]
+  );
+  const albums = useMemo(
+    () => (results?.albums?.items ?? []).filter(Boolean),
+    [results]
+  );
+  const artists = useMemo(
+    () => rankArtistsByQuery((results?.artists?.items ?? []).filter(Boolean), query),
+    [results, query]
+  );
 
   const handlePlayArtist = async (artist: SpotifyArtist) => {
     try {
@@ -102,8 +172,13 @@ export function SearchView({
     await onPlayContext({ contextUri: album.uri, offsetPosition: 0 });
   };
 
+  const hasAnyResults = artists.length > 0 || tracks.length > 0 || albums.length > 0;
+  const showArtists = activeFilter === "all" || activeFilter === "artists";
+  const showTracks = activeFilter === "all" || activeFilter === "tracks";
+  const showAlbums = activeFilter === "all" || activeFilter === "albums";
+
   return (
-    <div className="anim-view-enter flex-1 overflow-y-auto px-8 pt-7 pb-32">
+    <div className="flex-1 overflow-y-auto px-8 pt-7 pb-32">
       {/* Minimalist Search Bar */}
       <div className="max-w-[640px]">
         <h1 className="text-[28px] font-semibold tracking-[-0.03em] text-[var(--text-primary)] mb-5">
@@ -121,7 +196,7 @@ export function SearchView({
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Canciones, álbumes o artistas..."
+            placeholder="Artistas, canciones o álbumes..."
             aria-label="Buscar en Spotify"
             className="w-full h-11 pl-11 pr-10 rounded-xl text-[14px] bg-[var(--bg-elevated)] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] border border-[var(--border-hairline)] focus:outline-none focus:border-[var(--border-subtle)] transition-colors"
           />
@@ -130,6 +205,7 @@ export function SearchView({
               type="button"
               onClick={() => {
                 setQuery("");
+                setActiveFilter("all");
                 inputRef.current?.focus();
               }}
               aria-label="Limpiar búsqueda"
@@ -139,6 +215,41 @@ export function SearchView({
             </button>
           )}
         </div>
+
+        {/* Category Filter Pills */}
+        {results && !isSearching && hasAnyResults && (
+          <div className="chrome-no-select mt-4 flex flex-wrap items-center gap-1.5">
+            {(
+              [
+                { id: "all", label: "Todo", count: artists.length + tracks.length + albums.length },
+                { id: "artists", label: "Artistas", count: artists.length },
+                { id: "tracks", label: "Canciones", count: tracks.length },
+                { id: "albums", label: "Álbumes", count: albums.length },
+              ] as const
+            )
+              .filter((tab) => tab.id === "all" || tab.count > 0)
+              .map((tab) => {
+                const isActive = activeFilter === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveFilter(tab.id)}
+                    className={`h-8 px-3.5 rounded-full text-[12px] font-medium inline-flex items-center gap-1.5 transition-all duration-200 ease-apple cursor-pointer ${
+                      isActive
+                        ? "bg-[var(--solid-bg)] text-[var(--solid-fg)]"
+                        : "bg-[var(--bg-elevated)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-hairline)]"
+                    }`}
+                  >
+                    <span>{tab.label}</span>
+                    {tab.id !== "all" && (
+                      <span className="text-[11px] opacity-70 tabular-nums">{tab.count}</span>
+                    )}
+                  </button>
+                );
+              })}
+          </div>
+        )}
       </div>
 
       {isSearching && (
@@ -155,7 +266,7 @@ export function SearchView({
       {!query.trim() && !isSearching && (
         <div className="mt-20 max-w-[360px]">
           <p className="text-[14px] text-[var(--text-secondary)] leading-relaxed">
-            Encuentra instantáneamente cualquier pista, disco o artista del catálogo de Spotify.
+            Encuentra instantáneamente cualquier artista, disco o canción del catálogo de Spotify.
           </p>
           <p className="mt-2 text-[12px] text-[var(--text-tertiary)]">
             Atajo rápido: <kbd className="px-1.5 py-0.5 rounded border border-[var(--border-subtle)] text-[11px]">Ctrl + K</kbd>
@@ -164,9 +275,80 @@ export function SearchView({
       )}
 
       {results && !isSearching && (
-        <div className="mt-9 space-y-11">
+        <div className="mt-8 space-y-11">
+          {/* Artists FIRST — immediately visible above the fold when searching by artist name */}
+          {showArtists && artists.length > 0 && (
+            <section>
+              <h2 className="text-[13px] font-medium uppercase tracking-[0.08em] text-[var(--text-tertiary)] mb-4">
+                Artistas
+              </h2>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-5">
+                {(activeFilter === "all" ? artists.slice(0, 6) : artists).map((artist) => {
+                  const avatar = getBestImage(artist.images, "medium");
+                  return (
+                    <div
+                      key={artist.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        const avatarEl = e.currentTarget.querySelector<HTMLElement>(
+                          "[data-morph-avatar]"
+                        );
+                        onSelectArtist(artist, avatarEl);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onSelectArtist(artist);
+                        }
+                      }}
+                      className="group playlist-card-zoom p-3.5 rounded-2xl bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--border-subtle)] flex flex-col items-center text-center cursor-pointer"
+                    >
+                      <div className="relative mb-3">
+                        <div
+                          data-morph-avatar
+                          data-artist-cover={artist.id}
+                          className="playlist-cover-zoom w-24 h-24 rounded-full overflow-hidden bg-[var(--bg-card)] border border-[var(--border-hairline)] flex items-center justify-center"
+                        >
+                          {avatar ? (
+                            <img
+                              src={avatar}
+                              alt={artist.name}
+                              loading="lazy"
+                              decoding="async"
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <User size={28} strokeWidth={1.5} className="text-[var(--text-tertiary)]" />
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          aria-label={`Reproducir ${artist.name}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handlePlayArtist(artist);
+                          }}
+                          className="chrome-no-select absolute right-0 bottom-0 w-8 h-8 rounded-full bg-[var(--solid-bg)] text-[var(--solid-fg)] shadow-lg flex items-center justify-center opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 ease-apple cursor-pointer"
+                        >
+                          <Play size={13} strokeWidth={1.8} fill="currentColor" />
+                        </button>
+                      </div>
+                      <div className="text-[13px] font-medium text-[var(--text-primary)] truncate w-full tracking-[-0.01em]">
+                        {artist.name}
+                      </div>
+                      <div className="text-[11px] text-[var(--text-tertiary)] mt-0.5">
+                        Artista · Ver álbumes
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
           {/* Songs */}
-          {tracks.length > 0 && (
+          {showTracks && tracks.length > 0 && (
             <section>
               <h2 className="text-[13px] font-medium uppercase tracking-[0.08em] text-[var(--text-tertiary)] mb-3.5">
                 Canciones
@@ -221,7 +403,12 @@ export function SearchView({
                           {track.name}
                         </div>
                         <div className="text-[12px] text-[var(--text-secondary)] truncate">
-                          {track.artists}
+                          <ArtistLinks
+                            artistsText={track.artists}
+                            artistItems={track.artistItems}
+                            fallbackArtistId={track.artistId}
+                            onSelectArtist={(id, name) => onSelectArtist(id, null, name)}
+                          />
                         </div>
                       </div>
 
@@ -269,7 +456,7 @@ export function SearchView({
           )}
 
           {/* Albums */}
-          {albums.length > 0 && (
+          {showAlbums && albums.length > 0 && (
             <section>
               <h2 className="text-[13px] font-medium uppercase tracking-[0.08em] text-[var(--text-tertiary)] mb-4">
                 Álbumes
@@ -278,10 +465,19 @@ export function SearchView({
                 {albums.map((album) => (
                   <div
                     key={album.id}
-                    onClick={() => onSelectAlbum(album.id)}
+                    onClick={(e) => {
+                      const coverEl = e.currentTarget.querySelector<HTMLElement>(
+                        "[data-morph-cover]"
+                      );
+                      onSelectAlbum(album, coverEl);
+                    }}
                     className="group playlist-card-zoom p-3 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--border-subtle)] cursor-pointer"
                   >
-                    <div className="playlist-cover-zoom relative aspect-square mb-3">
+                    <div
+                      data-morph-cover
+                      data-album-cover={album.id}
+                      className="playlist-cover-zoom relative aspect-square mb-3 rounded-lg overflow-hidden"
+                    >
                       <LazyCover
                         src={getBestImage(album.images, "medium")}
                         alt={album.name}
@@ -313,49 +509,7 @@ export function SearchView({
             </section>
           )}
 
-          {/* Artists */}
-          {artists.length > 0 && (
-            <section>
-              <h2 className="text-[13px] font-medium uppercase tracking-[0.08em] text-[var(--text-tertiary)] mb-4">
-                Artistas
-              </h2>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-5">
-                {artists.map((artist) => {
-                  const avatar = getBestImage(artist.images, "medium");
-                  return (
-                    <button
-                      key={artist.id}
-                      type="button"
-                      onClick={() => void handlePlayArtist(artist)}
-                      className="group p-3.5 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-hairline)] hover:border-[var(--border-subtle)] flex flex-col items-center text-center transition-all duration-200 ease-apple cursor-pointer"
-                    >
-                      <div className="relative w-24 h-24 rounded-full overflow-hidden bg-[var(--bg-card)] border border-[var(--border-hairline)] flex items-center justify-center mb-3">
-                        {avatar ? (
-                          <img
-                            src={avatar}
-                            alt={artist.name}
-                            loading="lazy"
-                            decoding="async"
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 ease-apple"
-                          />
-                        ) : (
-                          <User size={28} strokeWidth={1.5} className="text-[var(--text-tertiary)]" />
-                        )}
-                      </div>
-                      <div className="text-[13px] font-medium text-[var(--text-primary)] truncate w-full tracking-[-0.01em]">
-                        {artist.name}
-                      </div>
-                      <div className="text-[11px] text-[var(--text-tertiary)] mt-0.5">
-                        Artista · Top tracks
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
-          )}
-
-          {tracks.length === 0 && albums.length === 0 && artists.length === 0 && (
+          {!hasAnyResults && (
             <p className="text-[13px] text-[var(--text-secondary)]">
               No se encontraron resultados para “{query}”.
             </p>

@@ -9,6 +9,7 @@ import {
   Maximize2,
   Play,
   PlusCircle,
+  User,
 } from "lucide-react";
 import type { SpotifyApiClient } from "../lib/spotifyApi";
 import type { SpotifyPlaylist, UnifiedTrack } from "../types/spotify";
@@ -32,6 +33,7 @@ interface TrackContextMenuProps {
   onToggleLike: (track: UnifiedTrack, currentlyLiked: boolean) => Promise<void>;
   onAddToPlaylist: (playlist: SpotifyPlaylist, track: UnifiedTrack) => Promise<void>;
   onOpenStageWithTrack: (track: UnifiedTrack) => void;
+  onGoToArtist?: (artistId: string, artistName?: string) => void;
   onGoToAlbum?: (albumId: string) => void;
   onCopyLink: (track: UnifiedTrack) => void;
 }
@@ -46,6 +48,7 @@ export function TrackContextMenu({
   onToggleLike,
   onAddToPlaylist,
   onOpenStageWithTrack,
+  onGoToArtist,
   onGoToAlbum,
   onCopyLink,
 }: TrackContextMenuProps) {
@@ -261,6 +264,22 @@ export function TrackContextMenu({
         <Maximize2 size={14} strokeWidth={1.5} />
         Ver portada en pantalla
       </button>
+
+      {menu.track.artistId && onGoToArtist && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            const firstArtistName = menu.track.artists.split(",")[0]?.trim();
+            onGoToArtist(menu.track.artistId!, firstArtistName);
+            onClose();
+          }}
+          className="w-full h-9 px-2.5 rounded-xl flex items-center gap-2.5 text-[12.5px] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors cursor-pointer"
+        >
+          <User size={14} strokeWidth={1.5} />
+          Ir al artista
+        </button>
+      )}
 
       {menu.track.albumId && onGoToAlbum && (
         <button
