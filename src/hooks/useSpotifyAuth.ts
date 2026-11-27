@@ -1,20 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { SpotifyApiClient } from "../lib/spotifyApi";
+import {
+  DEV_MODE_USER_NOT_ALLOWED_MSG,
+  SpotifyApiClient,
+  SpotifyApiError,
+} from "../lib/spotifyApi";
 import type { AuthTokenPayload, SpotifyUser } from "../types/spotify";
 
 const CLIENT_ID_STORAGE_KEY = "spotyfast.spotify_client_id";
 
 function readInitialClientId(): string {
+  try {
+    const saved = localStorage.getItem(CLIENT_ID_STORAGE_KEY)?.trim();
+    if (saved) return saved;
+  } catch {
+    // Ignore storage errors
+  }
   const fromEnv = (import.meta.env.VITE_SPOTIFY_CLIENT_ID as string | undefined)?.trim();
   if (fromEnv && fromEnv !== "your_spotify_client_id_here") {
     return fromEnv;
   }
-  try {
-    return localStorage.getItem(CLIENT_ID_STORAGE_KEY)?.trim() ?? "";
-  } catch {
-    return "";
-  }
+  return "";
 }
 
 export function useSpotifyAuth() {
@@ -86,15 +92,23 @@ export function useSpotifyAuth() {
       try {
         const valid = await invoke<AuthTokenPayload | null>("get_valid_token");
         if (!active) return;
-        setTokenPayload(valid);
         if (valid) {
+          tokenRef.current = valid;
           const profile = await api.getMe();
-          if (active) setUser(profile);
+          if (!active) return;
+          setTokenPayload(valid);
+          setUser(profile);
         }
       } catch (err) {
         if (active) {
           console.warn("[SpotyFast] No se pudo restaurar la sesión:", err);
+          tokenRef.current = null;
           setTokenPayload(null);
+          setUser(null);
+          if (err instanceof SpotifyApiError && (err.isUserNotRegistered || err.status === 403)) {
+            await invoke("logout_spotify").catch(() => {});
+            setError(err.isUserNotRegistered ? err.message : DEV_MODE_USER_NOT_ALLOWED_MSG);
+          }
         }
       } finally {
         if (active) setIsInitializing(false);
@@ -140,11 +154,24 @@ export function useSpotifyAuth() {
           clientId: effectiveId,
         });
         tokenRef.current = payload;
-        setTokenPayload(payload);
         const profile = await api.getMe();
+        setTokenPayload(payload);
         setUser(profile);
       } catch (err) {
-        const message = typeof err === "string" ? err : err instanceof Error ? err.message : "Error de autenticación.";
+        tokenRef.current = null;
+        setTokenPayload(null);
+        setUser(null);
+        if (err instanceof SpotifyApiError) {
+          await invoke("logout_spotify").catch(() => {});
+        }
+        const message =
+          err instanceof SpotifyApiError && (err.isUserNotRegistered || err.status === 403)
+            ? DEV_MODE_USER_NOT_ALLOWED_MSG
+            : typeof err === "string"
+              ? err
+              : err instanceof Error
+                ? err.message
+                : "Error de autenticación.";
         setError(message);
       } finally {
         setIsAuthenticating(false);

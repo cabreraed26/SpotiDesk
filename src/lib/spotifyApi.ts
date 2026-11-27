@@ -18,11 +18,31 @@ const API_BASE = "https://api.spotify.com/v1";
 
 export class SpotifyApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  isUserNotRegistered: boolean;
+  constructor(status: number, message: string, isUserNotRegistered = false) {
     super(message);
     this.status = status;
+    this.isUserNotRegistered = isUserNotRegistered;
     this.name = "SpotifyApiError";
   }
+}
+
+export const DEV_MODE_USER_NOT_ALLOWED_MSG =
+  "Tu cuenta de Spotify no está autorizada para este Client ID (Error 403). Pide al creador que te agregue en «User Management» del Spotify Developer Dashboard, o pulsa «Cambiar Client ID» para usar uno propio.";
+
+function isDevModeUnregistered403(status: number, rawText: string, endpoint: string): boolean {
+  if (status !== 403) return false;
+  const lower = rawText.toLowerCase();
+  if (
+    lower.includes("developer.spotify.com/dashboard") ||
+    lower.includes("not be registered") ||
+    lower.includes("not registered") ||
+    lower.includes("user may not be registered")
+  ) {
+    return true;
+  }
+  // Spotify /me returns a plain-text or empty 403 when the account is not allowlisted in Dev Mode
+  return endpoint === "/me";
 }
 
 export interface SpotifyApiClientOptions {
@@ -68,15 +88,31 @@ export class SpotifyApiClient {
 
     if (!res.ok) {
       let message = `Spotify API error (${res.status})`;
+      let rawText = "";
       try {
-        const errBody = await res.json();
-        if (errBody?.error?.message) {
-          message = errBody.error.message;
+        rawText = (await res.text()).trim();
+        if (rawText) {
+          try {
+            const errBody = JSON.parse(rawText) as { error?: { message?: string } };
+            if (errBody?.error?.message) {
+              message = errBody.error.message;
+            } else {
+              message = rawText;
+            }
+          } catch {
+            // Non-JSON error body (e.g. Spotify Development Mode 403 plain text)
+            message = rawText;
+          }
         }
       } catch {
-        // Ignore parse error on non-JSON responses
+        // Ignore body read error
       }
-      throw new SpotifyApiError(res.status, message);
+
+      const notRegistered = isDevModeUnregistered403(res.status, rawText, endpoint);
+      if (notRegistered) {
+        message = DEV_MODE_USER_NOT_ALLOWED_MSG;
+      }
+      throw new SpotifyApiError(res.status, message, notRegistered);
     }
 
     const text = await res.text();
