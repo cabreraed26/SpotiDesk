@@ -65,6 +65,13 @@ export function LibraryView({
       setIsLoading(!snapArtists);
     }
 
+    // Skip redundant network revalidation if this library tab was fetched recently (< 2 min)
+    const cacheKey = mode === "albums" ? "savedAlbums" : "followedArtists";
+    const hasFreshCache =
+      (mode === "albums" ? Boolean(snapAlbums) : Boolean(snapArtists)) &&
+      viewCache.isFresh(cacheKey);
+    if (hasFreshCache) return;
+
     // Revalidate cleanly in the background (0ms render when cached!)
     (async () => {
       try {
@@ -88,6 +95,7 @@ export function LibraryView({
             offset: nextOffset,
             hasMore: nextMore,
           };
+          viewCache.markFresh("savedAlbums");
         } else {
           const page = await api.getFollowedArtists(50);
           if (cancelled) return;
@@ -106,6 +114,7 @@ export function LibraryView({
             after: nextAfter,
             hasMore: nextMore,
           };
+          viewCache.markFresh("followedArtists");
         }
       } catch (err) {
         if (cancelled) return;

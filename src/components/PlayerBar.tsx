@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Check,
+  CloudRain,
+  Disc3,
+  Flame,
   Heart,
   Laptop,
   ListMusic,
@@ -15,11 +18,16 @@ import {
   SkipForward,
   Smartphone,
   Speaker,
+  Timer,
   Volume1,
   Volume2,
   VolumeX,
+  Waves,
 } from "lucide-react";
 import type { RepeatMode } from "../hooks/useSpotifyPlayer";
+import type { SleepTimerState } from "../hooks/useSleepTimer";
+import { POMODORO_PRESETS, type PomodoroState } from "../hooks/usePomodoro";
+import type { AmbientChannelId, AmbientLevels } from "../lib/ambientAudio";
 import type { SpotifyDevice, UnifiedTrack } from "../types/spotify";
 import type { TrackTransitionDir } from "./NowPlayingStage";
 import { formatDuration } from "../lib/format";
@@ -42,6 +50,11 @@ interface PlayerBarProps {
   activeDeviceName: string;
   isStageOpen: boolean;
   isQueueOpen: boolean;
+  sleepTimer?: SleepTimerState;
+  pomodoro?: PomodoroState;
+  ambientLevels?: AmbientLevels;
+  onSetAmbientLevel?: (id: AmbientChannelId, level: number) => void;
+  onStopAllAmbient?: () => void;
   trackDir: TrackTransitionDir;
   onOpenStage: () => void;
   onToggleQueue: () => void;
@@ -81,6 +94,11 @@ export function PlayerBar({
   activeDeviceName,
   isStageOpen,
   isQueueOpen,
+  sleepTimer,
+  pomodoro,
+  ambientLevels,
+  onSetAmbientLevel,
+  onStopAllAmbient,
   trackDir,
   onOpenStage,
   onToggleQueue,
@@ -100,11 +118,16 @@ export function PlayerBar({
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubPosition, setScrubPosition] = useState(0);
   const [devicesOpen, setDevicesOpen] = useState(false);
+  const [timerOpen, setTimerOpen] = useState(false);
+  const [timerTab, setTimerTab] = useState<"sleep" | "pomodoro">("sleep");
+  const [mixerOpen, setMixerOpen] = useState(false);
   const [waterKey, setWaterKey] = useState(0);
   const [tremorKey, setTremorKey] = useState(0);
   const [heartKey, setHeartKey] = useState(0);
   const [skipNudge, setSkipNudge] = useState<"next" | "prev" | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  const timerPopoverRef = useRef<HTMLDivElement | null>(null);
+  const mixerPopoverRef = useRef<HTMLDivElement | null>(null);
   const prevPlayingRef = useRef<boolean | null>(null);
 
   // React automatically to Play (Water-Drop Ripple) & Pause (Kinetic Tremor)
@@ -119,16 +142,26 @@ export function PlayerBar({
     prevPlayingRef.current = isPlaying;
   }, [isPlaying]);
 
-  // Close Spotify Connect popover on outside click or Escape
+  // Close popovers on outside click or Escape
   useEffect(() => {
-    if (!devicesOpen) return;
+    if (!devicesOpen && !timerOpen && !mixerOpen) return;
     const handlePointer = (e: MouseEvent) => {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
+      if (devicesOpen && popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
         setDevicesOpen(false);
+      }
+      if (timerOpen && timerPopoverRef.current && !timerPopoverRef.current.contains(e.target as Node)) {
+        setTimerOpen(false);
+      }
+      if (mixerOpen && mixerPopoverRef.current && !mixerPopoverRef.current.contains(e.target as Node)) {
+        setMixerOpen(false);
       }
     };
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDevicesOpen(false);
+      if (e.key === "Escape") {
+        setDevicesOpen(false);
+        setTimerOpen(false);
+        setMixerOpen(false);
+      }
     };
     document.addEventListener("mousedown", handlePointer);
     document.addEventListener("keydown", handleKey);
@@ -136,7 +169,7 @@ export function PlayerBar({
       document.removeEventListener("mousedown", handlePointer);
       document.removeEventListener("keydown", handleKey);
     };
-  }, [devicesOpen]);
+  }, [devicesOpen, timerOpen, mixerOpen]);
 
   const effectivePosition = isScrubbing ? scrubPosition : positionMs;
   const progressPercent =
@@ -172,6 +205,7 @@ export function PlayerBar({
   return (
     <div className="pointer-events-none fixed bottom-4 left-0 right-0 z-30 flex justify-center px-5">
       <section
+        data-persistent-player-bar
         aria-label="Barra de reproducción"
         className={`pointer-events-auto glass-surface w-full max-w-[1060px] h-[78px] px-4 rounded-2xl border border-[var(--border-hairline)] grid grid-cols-[minmax(0,1fr)_minmax(280px,1.35fr)_minmax(0,1fr)] items-center gap-4 transition-transform duration-300 ease-apple ${
           tremorKey > 0 && !isPlaying ? "anim-capsule-tremor" : ""
@@ -535,6 +569,255 @@ export function PlayerBar({
               />
             </div>
           </div>
+
+          {/* Ambient Sound Mixer Popover (Procedural Web Audio API) */}
+          {ambientLevels && onSetAmbientLevel && (
+            <div className="relative" ref={mixerPopoverRef}>
+              {(() => {
+                const activeCount = Object.values(ambientLevels).filter((v) => v > 0.01).length;
+                return (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMixerOpen((v) => !v);
+                      setTimerOpen(false);
+                      setDevicesOpen(false);
+                    }}
+                    title="Mezclador de sonido ambiental (Lluvia, Vinilo, Ruido marrón, Chimenea)"
+                    aria-label="Mezclador de sonido ambiental"
+                    aria-expanded={mixerOpen}
+                    className={`w-8 h-8 rounded-lg flex items-center justify-center relative transition-all duration-200 ease-apple active:scale-95 cursor-pointer ${
+                      activeCount > 0 || mixerOpen
+                        ? "bg-[var(--bg-active)] text-[var(--text-primary)]"
+                        : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+                    }`}
+                  >
+                    <CloudRain size={14} strokeWidth={1.5} />
+                    {activeCount > 0 && (
+                      <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-[var(--text-primary)]" />
+                    )}
+                  </button>
+                );
+              })()}
+
+              {mixerOpen && (
+                <div className="anim-popover-enter popover-glass absolute bottom-12 right-0 w-64 p-3 rounded-2xl border border-[var(--border-subtle)] z-50 space-y-3">
+                  <div className="flex items-center justify-between border-b border-[var(--border-hairline)] pb-2">
+                    <span className="text-[10.5px] font-medium uppercase tracking-[0.09em] text-[var(--text-tertiary)]">
+                      Ambiente
+                    </span>
+                    {Object.values(ambientLevels).some((v) => v > 0.01) && onStopAllAmbient && (
+                      <button
+                        type="button"
+                        onClick={onStopAllAmbient}
+                        className="text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
+                      >
+                        Silenciar
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="space-y-2.5">
+                    {(
+                      [
+                        { id: "rain", label: "Lluvia", icon: <CloudRain size={13} strokeWidth={1.5} /> },
+                        { id: "vinyl", label: "Vinilo", icon: <Disc3 size={13} strokeWidth={1.5} /> },
+                        { id: "brown", label: "Ruido marrón", icon: <Waves size={13} strokeWidth={1.5} /> },
+                        { id: "fire", label: "Chimenea", icon: <Flame size={13} strokeWidth={1.5} /> },
+                      ] as const
+                    ).map(({ id, label, icon }) => {
+                      const pct = Math.round((ambientLevels[id] ?? 0) * 100);
+                      return (
+                        <div key={id} className="space-y-1">
+                          <div className="flex items-center justify-between text-[11.5px]">
+                            <span className="flex items-center gap-1.5 text-[var(--text-primary)]">
+                              <span className="text-[var(--text-secondary)]">{icon}</span>
+                              {label}
+                            </span>
+                            <span className="tabular-nums text-[10.5px] text-[var(--text-tertiary)]">
+                              {pct}%
+                            </span>
+                          </div>
+                          <div className="apple-slider-wrap w-full">
+                            <div className="apple-slider-track">
+                              <div className="apple-slider-fill" style={{ width: `${pct}%` }} />
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={100}
+                              value={pct}
+                              aria-label={`Volumen de ${label}`}
+                              onChange={(e) =>
+                                onSetAmbientLevel(id, Number(e.target.value) / 100)
+                              }
+                              className="apple-slider-input"
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Sleep Timer + Musical Pomodoro Popover */}
+          {sleepTimer && (
+            <div className="relative" ref={timerPopoverRef}>
+              {(() => {
+                const activeBadge = pomodoro?.label ?? sleepTimer.label;
+                return (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTimerOpen((v) => !v);
+                      setDevicesOpen(false);
+                      setMixerOpen(false);
+                    }}
+                    title={
+                      pomodoro?.label
+                        ? `Pomodoro (${pomodoro.phase === "focus" ? "Enfoque" : "Descanso"} · ${pomodoro.label})`
+                        : sleepTimer.label
+                          ? `Temporizador activo (${sleepTimer.label})`
+                          : "Temporizador y Pomodoro"
+                    }
+                    aria-label="Temporizador de apagado y Pomodoro"
+                    aria-expanded={timerOpen}
+                    className={`h-8 rounded-lg flex items-center justify-center gap-1 transition-all duration-200 ease-apple active:scale-95 cursor-pointer ${
+                      activeBadge
+                        ? "px-2 bg-[var(--bg-active)] text-[var(--text-primary)]"
+                        : timerOpen
+                          ? "w-8 bg-[var(--bg-active)] text-[var(--text-primary)]"
+                          : "w-8 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+                    }`}
+                  >
+                    <Timer size={14} strokeWidth={1.5} />
+                    {activeBadge && (
+                      <span className="text-[10.5px] font-medium tabular-nums">
+                        {activeBadge}
+                      </span>
+                    )}
+                  </button>
+                );
+              })()}
+
+              {timerOpen && (
+                <div className="anim-popover-enter popover-glass absolute bottom-12 right-0 w-56 p-2 rounded-2xl border border-[var(--border-subtle)] z-50">
+                  {pomodoro && (
+                    <div className="grid grid-cols-2 gap-1 p-0.5 mb-2 rounded-xl bg-[var(--bg-primary)]/70 border border-[var(--border-hairline)]">
+                      <button
+                        type="button"
+                        onClick={() => setTimerTab("sleep")}
+                        className={`h-7 rounded-lg text-[11px] font-medium transition-colors cursor-pointer ${
+                          timerTab === "sleep"
+                            ? "bg-[var(--solid-bg)] text-[var(--solid-fg)]"
+                            : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                        }`}
+                      >
+                        Sueño
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTimerTab("pomodoro")}
+                        className={`h-7 rounded-lg text-[11px] font-medium transition-colors cursor-pointer ${
+                          timerTab === "pomodoro"
+                            ? "bg-[var(--solid-bg)] text-[var(--solid-fg)]"
+                            : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                        }`}
+                      >
+                        Pomodoro
+                      </button>
+                    </div>
+                  )}
+
+                  {timerTab === "pomodoro" && pomodoro ? (
+                    <div className="space-y-1">
+                      {pomodoro.phase !== "idle" && (
+                        <div className="px-2.5 py-2 mb-1 rounded-xl bg-[var(--bg-active)] flex items-center justify-between text-[11.5px]">
+                          <span className="font-medium text-[var(--text-primary)]">
+                            {pomodoro.phase === "focus" ? "Enfoque activo" : "Descanso"}
+                          </span>
+                          <span className="font-mono tabular-nums text-[var(--text-primary)]">
+                            {pomodoro.label}
+                          </span>
+                        </div>
+                      )}
+                      {POMODORO_PRESETS.map((preset) => (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => {
+                            pomodoro.startFocus(preset.focusMin, preset.breakMin);
+                            setTimerOpen(false);
+                          }}
+                          className="w-full px-2.5 py-1.5 rounded-lg text-left text-[12px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors cursor-pointer"
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                      {pomodoro.phase !== "idle" && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            pomodoro.stop();
+                            setTimerOpen(false);
+                          }}
+                          className="w-full mt-1 pt-1.5 border-t border-[var(--border-hairline)] px-2.5 py-1.5 rounded-lg text-left text-[12px] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors cursor-pointer"
+                        >
+                          Detener Pomodoro
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-0.5">
+                      {[15, 30, 45, 60].map((mins) => (
+                        <button
+                          key={mins}
+                          type="button"
+                          onClick={() => {
+                            sleepTimer.setMinutes(mins);
+                            setTimerOpen(false);
+                          }}
+                          className="w-full px-2.5 py-1.5 rounded-lg text-left text-[12px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors cursor-pointer"
+                        >
+                          Pausar en {mins} minutos
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          sleepTimer.setEndOfTrack();
+                          setTimerOpen(false);
+                        }}
+                        className={`w-full px-2.5 py-1.5 rounded-lg flex items-center justify-between text-left text-[12px] transition-colors cursor-pointer ${
+                          sleepTimer.mode === "end_of_track"
+                            ? "bg-[var(--bg-active)] text-[var(--text-primary)] font-medium"
+                            : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+                        }`}
+                      >
+                        <span>Al terminar esta canción</span>
+                        {sleepTimer.mode === "end_of_track" && <Check size={12} strokeWidth={1.8} />}
+                      </button>
+                      {sleepTimer.mode !== "off" && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            sleepTimer.cancel();
+                            setTimerOpen(false);
+                          }}
+                          className="w-full mt-1 pt-1.5 border-t border-[var(--border-hairline)] px-2.5 py-1.5 rounded-lg text-left text-[12px] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors cursor-pointer"
+                        >
+                          Desactivar temporizador
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Queue Drawer Button */}
           <button

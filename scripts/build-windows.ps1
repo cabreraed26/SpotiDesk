@@ -31,7 +31,7 @@ $ProductName = if ($TauriConf.productName) { $TauriConf.productName } else { "Sp
 $Version = if ($TauriConf.version) { $TauriConf.version } else { "0.0.0" }
 
 $CargoToml = Get-Content (Join-Path $RootDir "src-tauri\Cargo.toml") -Raw
-$BinName = "spotyfast"
+$BinName = "spotidesk"
 if ($CargoToml -match '(?m)^name\s*=\s*"([^"]+)"') {
     $BinName = $Matches[1]
 }

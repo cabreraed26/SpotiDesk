@@ -1,0 +1,125 @@
+name: Release SpotiDesk (Public Installers)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.3.0)"
+        required: true
+        default: "v0.3.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build macOS Universal (.dmg + portable .zip)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Rust (Apple Silicon + Intel targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build public universal macOS bundle (no personal Client ID)
+        env:
+          SPOTIDESK_PUBLIC_BUILD: "1"
+          VITE_SPOTIFY_CLIENT_ID: ""
+        run: pnpm bundle:macos:universal:public
+
+      - name: Upload macOS release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotidesk-macos
+          path: |
+            releases/macos/*_installer.dmg
+            releases/macos/*_portable.zip
+
+  build-windows:
+    name: Build Windows x64 (.exe + .msi + portable .zip)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build public Windows bundle (no personal Client ID)
+        shell: pwsh
+        env:
+          SPOTIDESK_PUBLIC_BUILD: "1"
+          VITE_SPOTIFY_CLIENT_ID: ""
+        run: powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Public
+
+      - name: Upload Windows release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotidesk-windows
+          path: |
+            releases/windows/*_setup.exe
+            releases/windows/*_installer.msi
+            releases/windows/*_portable.zip
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: SpotiDesk ${{ inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          files: |
+            artifacts/*

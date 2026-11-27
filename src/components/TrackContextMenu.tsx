@@ -9,6 +9,8 @@ import {
   Maximize2,
   Play,
   PlusCircle,
+  Radio,
+  Trash2,
   User,
 } from "lucide-react";
 import type { SpotifyApiClient } from "../lib/spotifyApi";
@@ -21,6 +23,7 @@ export interface ContextMenuState {
   x: number;
   y: number;
   index?: number;
+  sourcePlaylistId?: string;
 }
 
 interface TrackContextMenuProps {
@@ -30,8 +33,10 @@ interface TrackContextMenuProps {
   onClose: () => void;
   onPlayNow: (track: UnifiedTrack) => void;
   onAddToQueue: (track: UnifiedTrack) => void;
+  onStartRadio?: (track: UnifiedTrack) => void;
   onToggleLike: (track: UnifiedTrack, currentlyLiked: boolean) => Promise<void>;
   onAddToPlaylist: (playlist: SpotifyPlaylist, track: UnifiedTrack) => Promise<void>;
+  onRemoveFromPlaylist?: (playlistId: string, track: UnifiedTrack) => Promise<void>;
   onOpenStageWithTrack: (track: UnifiedTrack) => void;
   onGoToArtist?: (artistId: string, artistName?: string) => void;
   onGoToAlbum?: (albumId: string) => void;
@@ -45,8 +50,10 @@ export function TrackContextMenu({
   onClose,
   onPlayNow,
   onAddToQueue,
+  onStartRadio,
   onToggleLike,
   onAddToPlaylist,
+  onRemoveFromPlaylist,
   onOpenStageWithTrack,
   onGoToArtist,
   onGoToAlbum,
@@ -180,6 +187,21 @@ export function TrackContextMenu({
         Añadir a la cola
       </button>
 
+      {onStartRadio && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onStartRadio(menu.track);
+            onClose();
+          }}
+          className="w-full h-9 px-2.5 rounded-xl flex items-center gap-2.5 text-[12.5px] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors cursor-pointer"
+        >
+          <Radio size={14} strokeWidth={1.6} />
+          Iniciar Radio de esta canción
+        </button>
+      )}
+
       <button
         type="button"
         role="menuitem"
@@ -249,6 +271,23 @@ export function TrackContextMenu({
           )}
         </div>
       )}
+
+      {menu.sourcePlaylistId &&
+        onRemoveFromPlaylist &&
+        writablePlaylists.some((p) => p.id === menu.sourcePlaylistId) && (
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              void onRemoveFromPlaylist(menu.sourcePlaylistId!, menu.track);
+              onClose();
+            }}
+            className="w-full h-9 px-2.5 rounded-xl flex items-center gap-2.5 text-[12.5px] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors cursor-pointer"
+          >
+            <Trash2 size={14} strokeWidth={1.6} />
+            Quitar de esta playlist
+          </button>
+        )}
 
       <div className="my-1 mx-2 h-px bg-[var(--border-hairline)]" />
 

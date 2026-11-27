@@ -11,6 +11,7 @@ import { formatDuration, getBestImage, normalizeTrack } from "../lib/format";
 import { viewCache, type SearchFilterTab } from "../lib/viewCache";
 import { LazyCover } from "./LazyCover";
 import { ArtistLinks } from "./ArtistLinks";
+import { startTrackPointerDrag, wasRecentTrackDrag } from "./TrackDragOverlay";
 
 interface SearchViewProps {
   api: SpotifyApiClient;
@@ -79,7 +80,11 @@ export function SearchView({
 
   useEffect(() => {
     if (!initialCache) {
-      inputRef.current?.focus();
+      // Focus slightly after the search-bar expansion morph starts so the caret doesn't flash mid-flight
+      const timer = window.setTimeout(() => {
+        inputRef.current?.focus();
+      }, 180);
+      return () => window.clearTimeout(timer);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -186,7 +191,7 @@ export function SearchView({
           Buscar
         </h1>
 
-        <div className="relative flex items-center">
+        <div data-search-bar className="relative flex items-center rounded-xl">
           <Search
             size={16}
             strokeWidth={1.5}
@@ -297,7 +302,7 @@ export function SearchView({
       )}
 
       {!query.trim() && !isSearching && (
-        <div className="mt-20 max-w-[360px]">
+        <div className="anim-search-section-1 mt-20 max-w-[360px]">
           <p className="text-[14px] text-[var(--text-secondary)] leading-relaxed">
             Encuentra instantáneamente cualquier artista, disco o canción del catálogo de Spotify.
           </p>
@@ -318,7 +323,7 @@ export function SearchView({
         >
           {/* Artists FIRST — immediately visible above the fold when searching by artist name */}
           {showArtists && artists.length > 0 && (
-            <section>
+            <section className="anim-search-section-1">
               <h2 className="text-[13px] font-medium uppercase tracking-[0.08em] text-[var(--text-tertiary)] mb-4">
                 Artistas
               </h2>
@@ -390,7 +395,7 @@ export function SearchView({
 
           {/* Songs */}
           {showTracks && tracks.length > 0 && (
-            <section>
+            <section className="anim-search-section-2">
               <h2 className="text-[13px] font-medium uppercase tracking-[0.08em] text-[var(--text-tertiary)] mb-3.5">
                 Canciones
               </h2>
@@ -402,6 +407,7 @@ export function SearchView({
                       key={track.id}
                       role="button"
                       tabIndex={0}
+                      onPointerDown={(e) => startTrackPointerDrag(e, track)}
                       onContextMenu={(e) => {
                         if (onTrackContextMenu) {
                           e.preventDefault();
@@ -409,6 +415,7 @@ export function SearchView({
                         }
                       }}
                       onClick={() => {
+                        if (wasRecentTrackDrag()) return;
                         if (isCurrent) onTogglePlay();
                         else void onPlayContext({ uris: [track.uri] });
                       }}
@@ -419,7 +426,7 @@ export function SearchView({
                           else void onPlayContext({ uris: [track.uri] });
                         }
                       }}
-                      className={`group flex items-center gap-3.5 px-3 py-2.5 transition-colors duration-150 cursor-pointer ${
+                      className={`chrome-no-select group flex items-center gap-3.5 px-3 py-2.5 transition-colors duration-150 cursor-pointer ${
                         isCurrent ? "bg-[var(--bg-active)]" : "hover:bg-[var(--bg-hover)]"
                       }`}
                     >
@@ -498,7 +505,7 @@ export function SearchView({
 
           {/* Albums */}
           {showAlbums && albums.length > 0 && (
-            <section>
+            <section className="anim-search-section-3">
               <h2 className="text-[13px] font-medium uppercase tracking-[0.08em] text-[var(--text-tertiary)] mb-4">
                 Álbumes
               </h2>

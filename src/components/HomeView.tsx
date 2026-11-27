@@ -1,12 +1,16 @@
-import { Heart, Play, Search } from "lucide-react";
-import type { SpotifyPlaylist, SpotifyUser } from "../types/spotify";
+import { BarChart3, Heart, Play, Search } from "lucide-react";
+import type { SpotifyPlaylist, SpotifyUser, UnifiedTrack } from "../types/spotify";
 import type { AppView } from "./Sidebar";
 import { getBestImage, getPlaylistTrackCount } from "../lib/format";
+import type { RecentTrackEntry } from "../lib/recentHistory";
 import { LazyCover } from "./LazyCover";
+import { startTrackPointerDrag, wasRecentTrackDrag } from "./TrackDragOverlay";
 
 interface HomeViewProps {
   user: SpotifyUser | null;
   playlists: SpotifyPlaylist[];
+  recentTracks?: RecentTrackEntry[];
+  currentTrackUri?: string;
   onSelectView: (view: AppView) => void;
   onSelectPlaylist: (
     playlist: SpotifyPlaylist,
@@ -17,6 +21,9 @@ interface HomeViewProps {
   onPrefetchPlaylist?: (playlist: SpotifyPlaylist) => void;
   onPrefetchLiked?: () => void;
   onPlayPlaylist: (playlistUri: string) => void;
+  onPlayTrack?: (track: UnifiedTrack) => void;
+  onTrackContextMenu?: (e: React.MouseEvent, track: UnifiedTrack) => void;
+  onOpenStats?: () => void;
 }
 
 function getGreeting(): string {
@@ -29,12 +36,17 @@ function getGreeting(): string {
 export function HomeView({
   user,
   playlists,
+  recentTracks = [],
+  currentTrackUri,
   onSelectView,
   onSelectPlaylist,
   onSelectLiked,
   onPrefetchPlaylist,
   onPrefetchLiked,
   onPlayPlaylist,
+  onPlayTrack,
+  onTrackContextMenu,
+  onOpenStats,
 }: HomeViewProps) {
   const firstName = user?.display_name?.split(" ")[0];
   const featured = playlists.slice(0, 10);
@@ -54,17 +66,32 @@ export function HomeView({
           </h1>
         </div>
 
-        <button
-          type="button"
-          onClick={() => onSelectView({ kind: "search" })}
-          className="chrome-no-select self-start sm:self-auto h-9 px-4 rounded-full border border-[var(--border-hairline)] bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[12.5px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] inline-flex items-center gap-2 transition-colors cursor-pointer"
-        >
-          <Search size={14} strokeWidth={1.5} />
-          Buscar música
-          <span className="ml-1 text-[11px] text-[var(--text-tertiary)]">
-            {isMac ? "⌘ K" : "Ctrl K"}
-          </span>
-        </button>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          {onOpenStats && (
+            <button
+              type="button"
+              onClick={onOpenStats}
+              title="Tu semana en SpotiDesk"
+              className="chrome-no-select h-9 px-3.5 rounded-full border border-[var(--border-hairline)] bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[12.5px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <BarChart3 size={14} strokeWidth={1.5} />
+              <span className="hidden md:inline">Tu semana</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            data-search-bar-trigger
+            onClick={() => onSelectView({ kind: "search" })}
+            className="chrome-no-select h-9 px-4 rounded-full border border-[var(--border-hairline)] bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[12.5px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] inline-flex items-center gap-2 transition-colors cursor-pointer"
+          >
+            <Search size={14} strokeWidth={1.5} />
+            Buscar música
+            <span className="ml-1 text-[11px] text-[var(--text-tertiary)]">
+              {isMac ? "⌘ K" : "Ctrl K"}
+            </span>
+          </button>
+        </div>
       </section>
 
       {/* Quick Access Strip */}
@@ -163,6 +190,76 @@ export function HomeView({
           ))}
         </div>
       </section>
+
+      {/* Recently Played (Local History) */}
+      {recentTracks.length > 0 && onPlayTrack && (
+        <section>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-[13px] font-medium uppercase tracking-[0.08em] text-[var(--text-tertiary)]">
+              Continuar escuchando
+            </h2>
+            <span className="text-[12px] tabular-nums text-[var(--text-tertiary)]">
+              Recientes
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {recentTracks.slice(0, 8).map(({ track }) => {
+              const isCurrent = currentTrackUri === track.uri;
+              return (
+                <div
+                  key={track.uri}
+                  role="button"
+                  tabIndex={0}
+                  onPointerDown={(e) => startTrackPointerDrag(e, track)}
+                  onClick={() => {
+                    if (wasRecentTrackDrag()) return;
+                    onPlayTrack(track);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onPlayTrack(track);
+                    }
+                  }}
+                  onContextMenu={(e) => {
+                    if (onTrackContextMenu) {
+                      e.preventDefault();
+                      onTrackContextMenu(e, track);
+                    }
+                  }}
+                  className={`chrome-no-select group playlist-row-zoom h-14 px-2.5 rounded-xl border flex items-center gap-3 cursor-pointer ${
+                    isCurrent
+                      ? "bg-[var(--bg-active)] border-[var(--border-subtle)]"
+                      : "bg-[var(--bg-elevated)] border-[var(--border-hairline)] hover:border-[var(--border-subtle)]"
+                  }`}
+                >
+                  <div className="playlist-cover-zoom shrink-0 rounded-lg overflow-hidden">
+                    <LazyCover
+                      src={track.albumImage}
+                      alt={track.name}
+                      className="w-10 h-10"
+                      iconSize={14}
+                      roundedClass="rounded-lg"
+                    />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-[var(--text-primary)] truncate tracking-[-0.01em]">
+                      {track.name}
+                    </div>
+                    <div className="text-[11.5px] text-[var(--text-secondary)] truncate">
+                      {track.artists}
+                    </div>
+                  </div>
+                  <span className="w-7 h-7 rounded-full bg-[var(--solid-bg)] text-[var(--solid-fg)] opacity-0 group-hover:opacity-100 flex items-center justify-center shrink-0 transition-opacity duration-200">
+                    <Play size={11} strokeWidth={1.8} fill="currentColor" />
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* Full Playlist Gallery */}
       {featured.length > 0 && (

@@ -225,6 +225,7 @@ mod macos_notch {
     fn apply_layout_on_main(
         window: &WebviewWindow,
         position: NotchPosition,
+        force_front: bool,
         mtm: MainThreadMarker,
     ) -> NotchLayoutPayload {
         let (canvas_w, canvas_h) = canvas_size_for(position);
@@ -292,7 +293,7 @@ mod macos_notch {
                     CGSize::new(canvas_w, canvas_h),
                 );
                 ns_win.setFrame_display(target_rect, true);
-                if window.is_visible().unwrap_or(false) {
+                if force_front || window.is_visible().unwrap_or(false) {
                     ns_win.orderFrontRegardless();
                 }
             }
@@ -301,10 +302,14 @@ mod macos_notch {
         layout
     }
 
-    pub fn apply_layout(window: &WebviewWindow, position: NotchPosition) -> NotchLayoutPayload {
+    pub fn apply_layout(
+        window: &WebviewWindow,
+        position: NotchPosition,
+        force_front: bool,
+    ) -> NotchLayoutPayload {
         // Avoid deadlocking when already on the macOS main thread (e.g. setup / sync commands)
         if let Some(mtm) = MainThreadMarker::new() {
-            return apply_layout_on_main(window, position, mtm);
+            return apply_layout_on_main(window, position, force_front, mtm);
         }
 
         let (tx, rx) = mpsc::channel();
@@ -312,7 +317,7 @@ mod macos_notch {
 
         let _ = window.run_on_main_thread(move || {
             let layout = if let Some(mtm) = MainThreadMarker::new() {
-                apply_layout_on_main(&win_clone, position, mtm)
+                apply_layout_on_main(&win_clone, position, force_front, mtm)
             } else {
                 NotchLayoutPayload {
                     position,
@@ -415,16 +420,28 @@ fn position_notch_canvas_non_macos(
 }
 
 pub fn apply_notch_layout(app: &AppHandle, window: &WebviewWindow, position: NotchPosition) -> NotchLayoutPayload {
+    apply_notch_layout_with_front(app, window, position, false)
+}
+
+fn apply_notch_layout_with_front(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    position: NotchPosition,
+    force_front: bool,
+) -> NotchLayoutPayload {
     let saved_bubble = app.state::<NotchState>().bubble_origin();
 
     #[cfg(target_os = "macos")]
     let layout = {
         let _ = saved_bubble;
-        macos_notch::apply_layout(window, position)
+        macos_notch::apply_layout(window, position, force_front)
     };
 
     #[cfg(not(target_os = "macos"))]
-    let layout = position_notch_canvas_non_macos(window, position, saved_bubble);
+    let layout = {
+        let _ = force_front;
+        position_notch_canvas_non_macos(window, position, saved_bubble)
+    };
 
     app.state::<NotchState>().update(layout.clone());
     let _ = app.emit_to(NOTCH_LABEL, "notch-layout", &layout);
@@ -643,10 +660,26 @@ pub fn create_notch_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     .visible(true)
     .build()?;
 
-    apply_notch_layout(app, &window, position);
+    apply_notch_layout_with_front(app, &window, position, true);
     // Start click-through so the transparent area never blocks desktop clicks
     let _ = window.set_ignore_cursor_events(true);
     spawn_cursor_tracker(app.clone());
+
+    // On macOS, re-assert window level, frame, and front-ordering once NSApplication
+    // finishes launching and sibling windows (main/spotlight) finish initializing.
+    #[cfg(target_os = "macos")]
+    {
+        let app_boot = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(450)).await;
+            if let Some(win) = app_boot.get_webview_window(NOTCH_LABEL) {
+                let pos = app_boot.state::<NotchState>().snapshot().position;
+                apply_notch_layout_with_front(&app_boot, &win, pos, true);
+                let _ = win.set_ignore_cursor_events(true);
+            }
+        });
+    }
+
     Ok(window)
 }
 
@@ -660,7 +693,7 @@ pub fn toggle_notch_window(app: &AppHandle) -> bool {
             let position = app.state::<NotchState>().snapshot().position;
             let _ = window.set_ignore_cursor_events(true);
             let _ = window.show();
-            apply_notch_layout(app, &window, position);
+            apply_notch_layout_with_front(app, &window, position, true);
             return true;
         }
     }

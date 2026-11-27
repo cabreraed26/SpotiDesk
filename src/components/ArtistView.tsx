@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, Disc3, Play, Shuffle, User } from "lucide-react";
+import { ChevronLeft, Disc3, Play, RefreshCw, Shuffle, User } from "lucide-react";
 import type { SpotifyApiClient } from "../lib/spotifyApi";
 import type { SpotifyAlbumSimple, SpotifyArtist } from "../types/spotify";
 import { getBestImage } from "../lib/format";
@@ -70,6 +70,7 @@ export function ArtistView({
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [filter, setFilter] = useState<DiscographyFilter>("all");
   const [error, setError] = useState<string | null>(null);
+  const [retryEpoch, setRetryEpoch] = useState(0);
 
   const offsetRef = useRef(initialCache?.offset ?? 0);
 
@@ -86,35 +87,66 @@ export function ArtistView({
     setError(null);
     setIsLoadingAlbums(!cached);
 
+    // Skip redundant API calls if this artist's discography was fetched recently (< 2 min)
+    if (retryEpoch === 0 && cached && cached.artist && viewCache.isFresh(`artist:${artistId}`)) {
+      return;
+    }
+
     (async () => {
       try {
-        const [artistRes, firstPage] = await Promise.all([
-          api.getArtist(artistId).catch(() => cached?.artist ?? seedArtist ?? null),
-          api.getArtistAlbums(artistId, 10, 0, "album,single"),
-        ]);
+        // Reuse seedArtist when it already has artwork/name to save 1 API call per artist visit
+        const hasSeedArtwork = Boolean(seedArtist?.images && seedArtist.images.length > 0);
+        const resolvedArtist = hasSeedArtwork
+          ? seedArtist ?? null
+          : await api.getArtist(artistId).catch(() => cached?.artist ?? seedArtist ?? null);
         if (cancelled) return;
+        if (resolvedArtist) setArtist(resolvedArtist);
 
-        let combined = (firstPage.items ?? []).filter(Boolean);
-        let nextOffset = (firstPage.items ?? []).length;
-        let nextHasMore = Boolean(firstPage.next);
+        let combined: SpotifyAlbumSimple[] = [];
+        let nextOffset = 0;
+        let nextHasMore = false;
 
-        // Prefetch a second page of 10 cleanly so the grid feels rich right away
-        if (nextHasMore && combined.length < 18) {
-          try {
-            const secondPage = await api.getArtistAlbums(artistId, 10, nextOffset, "album,single");
-            if (!cancelled) {
-              combined = [...combined, ...(secondPage.items ?? []).filter(Boolean)];
-              nextOffset += (secondPage.items ?? []).length;
-              nextHasMore = Boolean(secondPage.next);
+        try {
+          const firstPage = await api.getArtistAlbums(artistId, 10, 0, "album,single");
+          if (cancelled) return;
+          combined = (firstPage.items ?? []).filter(Boolean);
+          nextOffset = (firstPage.items ?? []).length;
+          nextHasMore = Boolean(firstPage.next);
+        } catch (albumsErr) {
+          // Spotify Development Mode enforces a strict catalog quota on /artists/{id}/albums.
+          // If it returns 429, gracefully fall back to /search albums for this artist!
+          const artistName = resolvedArtist?.name || seedArtist?.name;
+          if (artistName) {
+            try {
+              const searchRes = await api.search(`artist:"${artistName}"`, 10);
+              if (cancelled) return;
+              const normTarget = artistName.trim().toLowerCase();
+              const matched = (searchRes.albums?.items ?? []).filter(
+                (al) =>
+                  Boolean(al?.id) &&
+                  (al.artists ?? []).some(
+                    (a) =>
+                      a.id === artistId ||
+                      a.name.trim().toLowerCase() === normTarget
+                  )
+              );
+              if (matched.length > 0) {
+                combined = matched;
+                nextOffset = matched.length;
+                nextHasMore = false;
+              } else {
+                throw albumsErr;
+              }
+            } catch {
+              throw albumsErr;
             }
-          } catch {
-            // Keep first page if second fails
+          } else {
+            throw albumsErr;
           }
         }
 
         if (cancelled) return;
         const deduped = deduplicateAlbums(combined);
-        const resolvedArtist = artistRes ?? cached?.artist ?? seedArtist ?? null;
 
         setArtist(resolvedArtist);
         setAlbums(deduped);
@@ -141,7 +173,7 @@ export function ArtistView({
     return () => {
       cancelled = true;
     };
-  }, [api, artistId, seedArtist]);
+  }, [api, artistId, retryEpoch, seedArtist]);
 
   const handleLoadMore = useCallback(async () => {
     if (isLoadingMore || !hasMore) return;
@@ -348,8 +380,16 @@ export function ArtistView({
             ))}
           </div>
         ) : error ? (
-          <div className="max-w-[520px] p-5 rounded-2xl bg-[var(--bg-elevated)] border border-[var(--border-hairline)] text-[13px] text-[var(--text-secondary)]">
-            {error}
+          <div className="max-w-[540px] p-5 rounded-2xl bg-[var(--bg-elevated)] border border-[var(--border-hairline)] flex items-center justify-between gap-4 text-[13px] text-[var(--text-secondary)]">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={() => setRetryEpoch((n) => n + 1)}
+              className="shrink-0 h-8 px-3.5 rounded-full bg-[var(--solid-bg)] text-[var(--solid-fg)] hover:bg-[var(--solid-hover)] text-[12px] font-medium inline-flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+            >
+              <RefreshCw size={12} strokeWidth={1.8} />
+              Reintentar
+            </button>
           </div>
         ) : filteredAlbums.length === 0 ? (
           <div className="py-12 flex flex-col items-center text-center gap-2.5 text-[var(--text-secondary)]">

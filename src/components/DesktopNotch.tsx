@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -9,9 +9,13 @@ import {
   Play,
   SkipBack,
   SkipForward,
+  Volume1,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import type { UnifiedTrack } from "../types/spotify";
 import type { ThemeMode } from "../hooks/useTheme";
+import { useLyrics } from "../hooks/useLyrics";
 import { formatDuration } from "../lib/format";
 import { LazyCover } from "./LazyCover";
 import { SpotiDeskLogo } from "./SpotiDeskLogo";
@@ -67,6 +71,14 @@ export interface NotchStatePayload {
   theme: ThemeMode;
   ambientRgb: string | null;
   isLiked: boolean;
+  notchLyricsEnabled?: boolean;
+  notchAutoPeek?: boolean;
+  lyricOffsetMs?: number;
+  pomodoroLabel?: string | null;
+  pomodoroPhase?: "idle" | "focus" | "break";
+  volume?: number;
+  muted?: boolean;
+  syncedAt?: number;
 }
 
 function readSavedTheme(): ThemeMode {
@@ -111,14 +123,50 @@ export function DesktopNotch() {
   }));
 
   const [isExpanded, setIsExpanded] = useState(false);
+  const [isPeeking, setIsPeeking] = useState(false);
   const [inflateAnimKey, setInflateAnimKey] = useState(0);
   const [livePosition, setLivePosition] = useState(0);
+  const lastPeekTrackUriRef = useRef<string | null>(null);
+  const peekTimerRef = useRef<number | null>(null);
   const [waterKey, setWaterKey] = useState(0);
   const [tremorKey, setTremorKey] = useState(0);
   const [skipNudge, setSkipNudge] = useState<"next" | "prev" | null>(null);
   const [heartKey, setHeartKey] = useState(0);
+  const [volumeHudPct, setVolumeHudPct] = useState<number | null>(null);
 
   const [isDraggingBubble, setIsDraggingBubble] = useState(false);
+
+  const localVolRef = useRef<number>(0.75);
+  const volHideTimerRef = useRef<number | null>(null);
+  const lastVolEmitRef = useRef<number>(0);
+  const pendingVolTimerRef = useRef<number | null>(null);
+  const wheelSwipeAccumRef = useRef<number>(0);
+  const wheelSwipeCooldownRef = useRef<number>(0);
+  const wheelSwipeResetRef = useRef<number | null>(null);
+
+  const notchLyricsEnabled = state.notchLyricsEnabled ?? true;
+  const { lyrics: notchLyrics } = useLyrics(state.track, Boolean(state.track && notchLyricsEnabled));
+
+  const activeLyricLine = useMemo(() => {
+    const lines = notchLyrics?.synced;
+    if (!lines || lines.length === 0) return null;
+    // Match NowPlayingStage's exact 180ms lookahead + per-track calibration offset
+    const targetMs = livePosition + 180 + (state.lyricOffsetMs ?? 0);
+    let active: string | null = null;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].timeMs <= targetMs) {
+        active = lines[i].text;
+      } else {
+        break;
+      }
+    }
+    return active && active !== "···" ? active : null;
+  }, [notchLyrics?.synced, livePosition, state.lyricOffsetMs]);
+
+  const syncAnchorRef = useRef<{ basePos: number; baseTime: number }>({
+    basePos: 0,
+    baseTime: Date.now(),
+  });
 
   const prevPlayingRef = useRef<boolean | null>(null);
   const hasSyncedStateRef = useRef(false);
@@ -144,11 +192,16 @@ export function DesktopNotch() {
 
   // Sync Notch layout & macOS hardware notch metrics from Rust
   useEffect(() => {
-    void invoke<NotchLayoutPayload>("get_notch_layout")
-      .then((initial) => {
-        if (initial) setLayout(initial);
-      })
-      .catch(() => {});
+    const fetchLayout = () => {
+      void invoke<NotchLayoutPayload>("get_notch_layout")
+        .then((initial) => {
+          if (initial) setLayout(initial);
+        })
+        .catch(() => {});
+    };
+
+    fetchLayout();
+    const bootResyncTimer = window.setTimeout(fetchLayout, 550);
 
     let unlistenLayout: (() => void) | undefined;
     void listen<NotchLayoutPayload>("notch-layout", (event) => {
@@ -160,6 +213,7 @@ export function DesktopNotch() {
     });
 
     return () => {
+      window.clearTimeout(bootResyncTimer);
       unlistenLayout?.();
     };
   }, []);
@@ -172,6 +226,8 @@ export function DesktopNotch() {
       setIsExpanded(hovered);
       if (hovered) {
         setInflateAnimKey((k) => k + 1);
+        // Immediately ask main window for exact authoritative playback clock on expand
+        void invoke("send_notch_action", { action: "request-state" });
       }
     }).then((fn) => {
       unlistenHover = fn;
@@ -194,8 +250,42 @@ export function DesktopNotch() {
         else setTremorKey((k) => k + 1);
       }
       prevPlayingRef.current = next.isPlaying;
+
+      const anchorTime = next.syncedAt ?? Date.now();
+      const elapsedSinceSync = next.isPlaying ? Math.max(0, Date.now() - anchorTime) : 0;
+      const computedPos =
+        next.durationMs > 0
+          ? Math.min(next.positionMs + elapsedSinceSync, next.durationMs)
+          : next.positionMs + elapsedSinceSync;
+
+      syncAnchorRef.current = { basePos: next.positionMs, baseTime: anchorTime };
+      if (typeof next.volume === "number" && performance.now() - lastVolEmitRef.current > 450) {
+        localVolRef.current = next.muted ? 0 : next.volume;
+      }
+
+      // Dynamic Island Auto-Peek on track transitions (briefly reveals new cover & title for ~2.8s)
+      const nextUri = next.track?.uri ?? null;
+      const autoPeekEnabled = next.notchAutoPeek !== false;
+      if (
+        autoPeekEnabled &&
+        nextUri &&
+        next.isPlaying &&
+        lastPeekTrackUriRef.current !== null &&
+        lastPeekTrackUriRef.current !== nextUri
+      ) {
+        setIsPeeking(true);
+        setInflateAnimKey((k) => k + 1);
+        if (peekTimerRef.current) window.clearTimeout(peekTimerRef.current);
+        peekTimerRef.current = window.setTimeout(() => {
+          setIsPeeking(false);
+        }, 2800);
+      }
+      if (nextUri) {
+        lastPeekTrackUriRef.current = nextUri;
+      }
+
       setState(next);
-      setLivePosition(next.positionMs);
+      setLivePosition(computedPos);
     }).then((fn) => {
       unlisten = fn;
       void invoke("send_notch_action", { action: "request-state" });
@@ -306,22 +396,100 @@ export function DesktopNotch() {
       sendAction("play-pause");
     }
   };
+  // Drift-free real-time clock derived from authoritative syncAnchorRef (always in sync with song & lyrics)
   useEffect(() => {
-    if (!state.isPlaying || (!isExpanded && !isSide && !isBubble)) return;
-    let last = performance.now();
-    const timer = window.setInterval(() => {
-      const now = performance.now();
-      const delta = now - last;
-      last = now;
-      setLivePosition((prev) =>
-        state.durationMs > 0 ? Math.min(prev + delta, state.durationMs) : prev + delta
-      );
-    }, 300);
+    if (!state.isPlaying) return;
+
+    const computeNow = () => {
+      const { basePos, baseTime } = syncAnchorRef.current;
+      const pos = basePos + Math.max(0, Date.now() - baseTime);
+      setLivePosition(state.durationMs > 0 ? Math.min(pos, state.durationMs) : pos);
+    };
+
+    computeNow();
+
+    const needsLiveTick =
+      isExpanded || isSide || isBubble || (notchLyricsEnabled && !isMacHardwareTop);
+    if (!needsLiveTick) return;
+
+    const timer = window.setInterval(computeNow, 150);
     return () => window.clearInterval(timer);
-  }, [state.isPlaying, state.durationMs, isExpanded, isSide, isBubble]);
+  }, [
+    state.isPlaying,
+    state.durationMs,
+    isExpanded,
+    isSide,
+    isBubble,
+    notchLyricsEnabled,
+    isMacHardwareTop,
+  ]);
 
   const sendAction = (action: string) => {
     void invoke("send_notch_action", { action });
+  };
+
+  // Scroll vertical over Notch = smooth real-time volume control; horizontal 2-finger swipe = Prev / Next
+  const handleNotchWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.ctrlKey) return;
+    const absX = Math.abs(e.deltaX);
+    const absY = Math.abs(e.deltaY);
+
+    // Horizontal swipe -> Next / Previous track
+    if (absX > absY * 1.45 && absX >= 5) {
+      const now = performance.now();
+      if (now < wheelSwipeCooldownRef.current) return;
+      wheelSwipeAccumRef.current += e.deltaX;
+      if (wheelSwipeResetRef.current) window.clearTimeout(wheelSwipeResetRef.current);
+      wheelSwipeResetRef.current = window.setTimeout(() => {
+        wheelSwipeAccumRef.current = 0;
+      }, 180);
+
+      if (Math.abs(wheelSwipeAccumRef.current) >= 75) {
+        const goNext = wheelSwipeAccumRef.current > 0;
+        wheelSwipeAccumRef.current = 0;
+        wheelSwipeCooldownRef.current = now + 560;
+        setSkipNudge(goNext ? "next" : "prev");
+        window.setTimeout(() => setSkipNudge(null), 260);
+        sendAction(goNext ? "next" : "previous");
+      }
+      return;
+    }
+
+    // Vertical scroll -> Volume control
+    if (absY >= 2) {
+      e.preventDefault();
+      // Normalize mouse wheel vs trackpad precision scroll
+      const step = Math.max(-0.08, Math.min(0.08, -e.deltaY * 0.0014));
+      const nextVol = Math.max(0, Math.min(1, localVolRef.current + step));
+      localVolRef.current = nextVol;
+      const pct = Math.round(nextVol * 100);
+      setVolumeHudPct(pct);
+
+      if (volHideTimerRef.current) window.clearTimeout(volHideTimerRef.current);
+      volHideTimerRef.current = window.setTimeout(() => {
+        setVolumeHudPct(null);
+      }, 1150);
+
+      const now = performance.now();
+      const emit = (valPct: number) => {
+        lastVolEmitRef.current = performance.now();
+        sendAction(`set-volume:${valPct}`);
+      };
+
+      if (now - lastVolEmitRef.current >= 48) {
+        if (pendingVolTimerRef.current) {
+          window.clearTimeout(pendingVolTimerRef.current);
+          pendingVolTimerRef.current = null;
+        }
+        emit(pct);
+      } else {
+        if (pendingVolTimerRef.current) window.clearTimeout(pendingVolTimerRef.current);
+        pendingVolTimerRef.current = window.setTimeout(() => {
+          pendingVolTimerRef.current = null;
+          emit(Math.round(localVolRef.current * 100));
+        }, 50);
+      }
+    }
   };
 
   const handlePrimaryPointerDown = (
@@ -364,6 +532,7 @@ export function DesktopNotch() {
     const quadrant: BubbleQuadrant = layout.bubbleQuadrant ?? "br";
     const arcAngles = QUADRANT_ARC_ANGLES[quadrant] ?? QUADRANT_ARC_ANGLES.br;
     const showSatellites = isExpanded && !isDraggingBubble;
+    const showTrackPill = (showSatellites || isPeeking) && !isDraggingBubble;
     const pillPosClass =
       quadrant === "br"
         ? "left-4 bottom-4"
@@ -374,7 +543,31 @@ export function DesktopNotch() {
             : "right-4 top-4";
 
     return (
-      <div className="chrome-no-select relative w-[360px] h-[360px] bg-transparent select-none overflow-hidden">
+      <div
+        onWheel={handleNotchWheel}
+        className="chrome-no-select relative w-[360px] h-[360px] bg-transparent select-none overflow-hidden"
+      >
+        {volumeHudPct !== null && (
+          <div
+            className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 z-40 px-3 py-1.5 rounded-full border border-[var(--border-subtle)] flex items-center gap-2 text-[11px] font-medium tabular-nums text-[var(--text-primary)]"
+            style={{ background: bubbleBg, boxShadow: "0 8px 20px rgba(0,0,0,0.4)" }}
+          >
+            {volumeHudPct === 0 ? (
+              <VolumeX size={12} strokeWidth={1.6} />
+            ) : volumeHudPct < 50 ? (
+              <Volume1 size={12} strokeWidth={1.6} />
+            ) : (
+              <Volume2 size={12} strokeWidth={1.6} />
+            )}
+            <div className="w-16 h-[3px] rounded-full bg-[var(--slider-track)] overflow-hidden">
+              <div
+                className="h-full rounded-full bg-[var(--slider-fill)]"
+                style={{ width: `${volumeHudPct}%` }}
+              />
+            </div>
+            <span>{volumeHudPct}%</span>
+          </div>
+        )}
         {/* Track title pill fading in softly on the free corner when expanded */}
         {state.track && (
           <div
@@ -382,8 +575,8 @@ export function DesktopNotch() {
             style={{
               background: bubbleBg,
               boxShadow: "0 10px 26px rgba(0, 0, 0, 0.4)",
-              opacity: showSatellites ? 1 : 0,
-              transform: showSatellites ? "translateY(0) scale(1)" : "translateY(6px) scale(0.9)",
+              opacity: showTrackPill ? 1 : 0,
+              transform: showTrackPill ? "translateY(0) scale(1)" : "translateY(6px) scale(0.9)",
             }}
           >
             <div className="text-[11px] font-semibold text-[var(--text-primary)] truncate">
@@ -675,6 +868,7 @@ export function DesktopNotch() {
   }
 
   // Compute geometry per platform & position
+  const showExpanded = isExpanded || isPeeking;
   const hwNotchWidth = Math.max(150, layout.notchWidth || 186);
   const hwNotchHeight = Math.max(32, layout.notchHeight || 34);
   const hwWingWidth = 28;
@@ -721,7 +915,7 @@ export function DesktopNotch() {
     collapsedRadius = "0 0 13px 13px";
     expandedRadius = "0 0 28px 28px";
     transformOrigin = "top center";
-    borderClasses = isExpanded
+    borderClasses = showExpanded
       ? "border-x border-b border-white/10"
       : "border-x border-b border-transparent";
     containerAlign = "items-start justify-center";
@@ -747,21 +941,22 @@ export function DesktopNotch() {
 
   return (
     <div
+      onWheel={handleNotchWheel}
       className={`chrome-no-select w-full h-full flex ${containerAlign} bg-transparent select-none`}
     >
       {/* Dynamic Island Notch inflating smoothly from its anchored screen edge */}
       <div
         className={`relative overflow-hidden ${borderClasses} ${
-          isExpanded && inflateAnimKey > 0 ? inflateClass : ""
+          showExpanded && inflateAnimKey > 0 ? inflateClass : ""
         } ${tremorKey > 0 && !state.isPlaying ? "anim-capsule-tremor" : ""}`}
         style={{
-          width: `${isExpanded ? expandedWidth : collapsedWidth}px`,
-          height: `${isExpanded ? expandedHeight : collapsedHeight}px`,
-          borderRadius: isExpanded ? expandedRadius : collapsedRadius,
+          width: `${showExpanded ? expandedWidth : collapsedWidth}px`,
+          height: `${showExpanded ? expandedHeight : collapsedHeight}px`,
+          borderRadius: showExpanded ? expandedRadius : collapsedRadius,
           transformOrigin,
           background: shellBackground,
           boxShadow: shellShadow,
-          transition: isExpanded
+          transition: showExpanded
             ? "width 500ms cubic-bezier(0.34, 1.38, 0.54, 1), height 500ms cubic-bezier(0.34, 1.38, 0.54, 1), border-radius 460ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 420ms cubic-bezier(0.22, 1, 0.36, 1)"
             : "width 380ms cubic-bezier(0.32, 0.72, 0, 1), height 380ms cubic-bezier(0.32, 0.72, 0, 1), border-radius 340ms cubic-bezier(0.32, 0.72, 0, 1), box-shadow 320ms cubic-bezier(0.32, 0.72, 0, 1)",
         }}
@@ -769,11 +964,11 @@ export function DesktopNotch() {
         {/* Collapsed Pill — varies cleanly between macOS hardware-notch wings, vertical side tab, and horizontal bar */}
         {isMacHardwareTop ? (
           <div
-            aria-hidden={isExpanded}
+            aria-hidden={showExpanded}
             className="absolute inset-0 flex items-center justify-between transition-all duration-200 ease-apple"
             style={{
-              opacity: isExpanded ? 0 : 1,
-              transform: isExpanded ? "scale(0.9)" : "scale(1)",
+              opacity: showExpanded ? 0 : 1,
+              transform: showExpanded ? "scale(0.9)" : "scale(1)",
               pointerEvents: "none",
             }}
           >
@@ -825,11 +1020,11 @@ export function DesktopNotch() {
           </div>
         ) : isSide ? (
           <div
-            aria-hidden={isExpanded}
+            aria-hidden={showExpanded}
             className="absolute inset-0 py-2.5 flex flex-col items-center justify-between transition-all duration-200 ease-apple"
             style={{
-              opacity: isExpanded ? 0 : 1,
-              transform: isExpanded ? "scale(0.84)" : "scale(1)",
+              opacity: showExpanded ? 0 : 1,
+              transform: showExpanded ? "scale(0.84)" : "scale(1)",
               pointerEvents: "none",
             }}
           >
@@ -874,11 +1069,11 @@ export function DesktopNotch() {
           </div>
         ) : (
           <div
-            aria-hidden={isExpanded}
+            aria-hidden={showExpanded}
             className="absolute inset-0 px-2.5 flex items-center justify-between gap-2 transition-all duration-200 ease-apple"
             style={{
-              opacity: isExpanded ? 0 : 1,
-              transform: isExpanded ? "scale(0.84)" : "scale(1)",
+              opacity: showExpanded ? 0 : 1,
+              transform: showExpanded ? "scale(0.84)" : "scale(1)",
               pointerEvents: "none",
             }}
           >
@@ -900,7 +1095,9 @@ export function DesktopNotch() {
             </div>
 
             <span className="text-[11px] font-medium tracking-[-0.01em] text-[var(--text-primary)] truncate flex-1 text-center">
-              {state.track?.name || "SpotiDesk"}
+              {notchLyricsEnabled && state.isPlaying && activeLyricLine
+                ? activeLyricLine
+                : state.track?.name || "SpotiDesk"}
             </span>
 
             {state.track ? (
@@ -921,16 +1118,16 @@ export function DesktopNotch() {
 
         {/* Expanded Dynamic Island Content (clears the macOS physical camera cutout automatically) */}
         <div
-          aria-hidden={!isExpanded}
+          aria-hidden={!showExpanded}
           className={`relative z-10 px-4 pb-3.5 flex flex-col justify-between transition-all duration-250 ease-apple ${
-            isExpanded ? "anim-balloon-content" : ""
+            showExpanded ? "anim-balloon-content" : ""
           }`}
           style={{
             width: `${expandedWidth}px`,
             height: `${expandedHeight}px`,
             paddingTop: `${expandedTopPad}px`,
-            opacity: isExpanded ? 1 : 0,
-            transform: isExpanded ? "scale(1)" : "scale(0.9)",
+            opacity: showExpanded ? 1 : 0,
+            transform: showExpanded ? "scale(1)" : "scale(0.9)",
             pointerEvents: isExpanded ? "auto" : "none",
           }}
         >
@@ -957,11 +1154,27 @@ export function DesktopNotch() {
             </div>
 
             <div className="min-w-0 flex-1">
-              <div className="text-[13.5px] font-semibold tracking-[-0.02em] text-[var(--text-primary)] truncate">
-                {state.track?.name || "SpotiDesk"}
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="text-[13.5px] font-semibold tracking-[-0.02em] text-[var(--text-primary)] truncate">
+                  {state.track?.name || "SpotiDesk"}
+                </span>
+                {state.pomodoroLabel && state.pomodoroPhase && state.pomodoroPhase !== "idle" && (
+                  <span className="shrink-0 px-1.5 py-0.5 rounded-full bg-white/12 text-[9.5px] font-mono tabular-nums text-[var(--text-primary)]">
+                    {state.pomodoroPhase === "focus" ? "●" : "○"} {state.pomodoroLabel}
+                  </span>
+                )}
               </div>
               <div className="text-[11.5px] text-[var(--text-secondary)] truncate mt-0.5">
-                {state.track?.artists || "Sin reproducción activa"}
+                {notchLyricsEnabled && activeLyricLine ? (
+                  <span
+                    key={activeLyricLine}
+                    className="inline-block text-[var(--text-primary)]/90 italic truncate max-w-full"
+                  >
+                    {activeLyricLine}
+                  </span>
+                ) : (
+                  state.track?.artists || "Sin reproducción activa"
+                )}
               </div>
             </div>
 
@@ -978,21 +1191,44 @@ export function DesktopNotch() {
             </button>
           </div>
 
-          {/* Slim Progress Indicator */}
-          <div className="flex items-center gap-2.5">
-            <span className="text-[10px] tabular-nums text-[var(--text-tertiary)] w-7">
-              {formatDuration(livePosition)}
-            </span>
-            <div className="flex-1 h-[3px] rounded-full bg-[var(--slider-track)] overflow-hidden">
-              <div
-                className="h-full rounded-full bg-[var(--slider-fill)] transition-all duration-300"
-                style={{ width: `${progressPct}%` }}
-              />
+          {/* Slim Progress Indicator (morphs smoothly into live Volume HUD when scrolling over Notch) */}
+          {volumeHudPct !== null ? (
+            <div className="flex items-center gap-2.5 text-[var(--text-primary)]">
+              <span className="w-7 flex items-center text-[var(--text-secondary)]">
+                {volumeHudPct === 0 ? (
+                  <VolumeX size={12} strokeWidth={1.7} />
+                ) : volumeHudPct < 50 ? (
+                  <Volume1 size={12} strokeWidth={1.7} />
+                ) : (
+                  <Volume2 size={12} strokeWidth={1.7} />
+                )}
+              </span>
+              <div className="flex-1 h-[4px] rounded-full bg-[var(--slider-track)] overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-[var(--text-primary)] transition-all duration-75"
+                  style={{ width: `${volumeHudPct}%` }}
+                />
+              </div>
+              <span className="text-[10px] font-medium tabular-nums text-[var(--text-primary)] w-7 text-right">
+                {volumeHudPct}%
+              </span>
             </div>
-            <span className="text-[10px] tabular-nums text-[var(--text-tertiary)] w-7 text-right">
-              {formatDuration(state.durationMs)}
-            </span>
-          </div>
+          ) : (
+            <div className="flex items-center gap-2.5">
+              <span className="text-[10px] tabular-nums text-[var(--text-tertiary)] w-7">
+                {formatDuration(livePosition)}
+              </span>
+              <div className="flex-1 h-[3px] rounded-full bg-[var(--slider-track)] overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-[var(--slider-fill)] transition-all duration-300"
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+              <span className="text-[10px] tabular-nums text-[var(--text-tertiary)] w-7 text-right">
+                {formatDuration(state.durationMs)}
+              </span>
+            </div>
+          )}
 
           {/* Bottom Controls: Prev, Play/Pause (Water Drop / Tremor), Next, Like */}
           <div className="flex items-center justify-between px-4">

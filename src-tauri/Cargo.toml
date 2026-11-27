@@ -1,12 +1,12 @@
 [package]
-name = "spotyfast"
+name = "spotidesk"
 version = "0.2.0"
-description = "SpotiDesk — Cliente de escritorio ultraligero de Spotify para Windows"
+description = "SpotiDesk — Cliente de escritorio ultraligero de Spotify para macOS y Windows"
 authors = ["SpotiDesk"]
 edition = "2024"
 
 [lib]
-name = "spotyfast_lib"
+name = "spotidesk_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

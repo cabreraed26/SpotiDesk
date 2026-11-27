@@ -12,6 +12,7 @@ const SDK_SCRIPT_URL = "https://sdk.scdn.co/spotify-player.js";
 const PLAYER_NAME = "SpotiDesk";
 
 export type RepeatMode = "off" | "context" | "track";
+export type SoftGlideMode = "off" | "subtle" | "cinematic";
 
 function mapSdkRepeat(mode: 0 | 1 | 2): RepeatMode {
   if (mode === 1) return "context";
@@ -64,6 +65,7 @@ export interface UseSpotifyPlayerOptions {
   getFreshToken: () => Promise<string | null>;
   api: SpotifyApiClient;
   autoplayEnabled?: boolean;
+  softGlideMode?: SoftGlideMode;
   onAutoplayTriggered?: (seedTrack: UnifiedTrack) => void;
 }
 
@@ -72,6 +74,7 @@ export function useSpotifyPlayer({
   getFreshToken,
   api,
   autoplayEnabled = true,
+  softGlideMode = "subtle",
   onAutoplayTriggered,
 }: UseSpotifyPlayerOptions) {
   const playerRef = useRef<SpotifyWebPlayer | null>(null);
@@ -82,6 +85,9 @@ export function useSpotifyPlayer({
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [isSdkReady, setIsSdkReady] = useState(false);
   const [sdkError, setSdkError] = useState<string | null>(null);
+  const [sdkEpoch, setSdkEpoch] = useState(0);
+  const playSeqRef = useRef(0);
+  const lastSdkReconnectAtRef = useRef(0);
 
   const [currentTrack, setCurrentTrack] = useState<UnifiedTrack | null>(null);
   const [contextUri, setContextUri] = useState<string | null>(null);
@@ -92,18 +98,28 @@ export function useSpotifyPlayer({
   const [shuffle, setShuffle] = useState(false);
   const [repeatMode, setRepeatMode] = useState<RepeatMode>("off");
   const [volume, setVolumeState] = useState(0.75);
+  const volumeRef = useRef(0.75);
+  volumeRef.current = volume;
   const [muted, setMuted] = useState(false);
   const previousVolumeRef = useRef(0.75);
   const isLocalActiveRef = useRef(false);
   const [isLocalActive, setIsLocalActive] = useState(false);
+  const userSelectedRemoteIdRef = useRef<string | null>(null);
+  const claimedOnReadyRef = useRef(false);
   const hydrateSeqRef = useRef(0);
   const lastSdkEventAtRef = useRef(0);
   const remoteHydrateTimersRef = useRef<number[]>([]);
   const endTrackSyncUriRef = useRef<string | null>(null);
 
-  // Autoplay state tracking refs
+  // Autoplay & Soft Glide state tracking refs
   const autoplayEnabledRef = useRef(autoplayEnabled);
   autoplayEnabledRef.current = autoplayEnabled;
+  const softGlideModeRef = useRef<SoftGlideMode>(softGlideMode);
+  softGlideModeRef.current = softGlideMode;
+  const glideSeqRef = useRef(0);
+  const fadeInPendingRef = useRef(false);
+  const endFadeUriRef = useRef<string | null>(null);
+  const lastSdkTrackUriRef = useRef<string | null>(null);
   const onAutoplayTriggeredRef = useRef(onAutoplayTriggered);
   onAutoplayTriggeredRef.current = onAutoplayTriggered;
   const wasPlayingRef = useRef(false);
@@ -143,38 +159,142 @@ export function useSpotifyPlayer({
     remoteHydrateTimersRef.current = [];
   }, []);
 
+  const cancelSoftGlide = useCallback((restoreVolume = false) => {
+    glideSeqRef.current += 1;
+    fadeInPendingRef.current = false;
+    if (restoreVolume && playerRef.current && isLocalActiveRef.current) {
+      void playerRef.current.setVolume(volumeRef.current).catch(() => {});
+    }
+  }, []);
+
+  const rampLocalVolume = useCallback(
+    async (fromVol: number, toVol: number, durationMs: number): Promise<boolean> => {
+      const player = playerRef.current;
+      if (!player || !isLocalActiveRef.current || durationMs <= 0) return false;
+      const mySeq = ++glideSeqRef.current;
+      const steps = Math.max(4, Math.round(durationMs / 35));
+      const stepDelay = durationMs / steps;
+      for (let i = 1; i <= steps; i++) {
+        if (glideSeqRef.current !== mySeq || !playerRef.current || !isLocalActiveRef.current) {
+          return false;
+        }
+        const t = i / steps;
+        // Smooth ease-in-out curve for perceptual audio transition
+        const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        const nextV = Math.max(0, Math.min(1, fromVol + (toVol - fromVol) * eased));
+        try {
+          await playerRef.current.setVolume(nextV);
+        } catch {
+          return false;
+        }
+        if (i < steps) {
+          await sleep(stepDelay);
+        }
+      }
+      return glideSeqRef.current === mySeq;
+    },
+    []
+  );
+
+  const runSoftGlideOut = useCallback(async () => {
+    const mode = softGlideModeRef.current;
+    if (
+      mode === "off" ||
+      !playerRef.current ||
+      !isLocalActiveRef.current ||
+      !wasPlayingRef.current ||
+      volumeRef.current <= 0.02
+    ) {
+      return;
+    }
+    const baseVol = volumeRef.current;
+    const outMs = mode === "cinematic" ? 480 : 220;
+    fadeInPendingRef.current = true;
+    await rampLocalVolume(baseVol, Math.max(0.02, baseVol * 0.04), outMs);
+  }, [rampLocalVolume]);
+
+  const runSoftGlideIn = useCallback(() => {
+    if (!fadeInPendingRef.current) return;
+    fadeInPendingRef.current = false;
+    const mode = softGlideModeRef.current;
+    const targetVol = volumeRef.current;
+    if (mode === "off" || !playerRef.current || !isLocalActiveRef.current) {
+      if (playerRef.current && isLocalActiveRef.current) {
+        void playerRef.current.setVolume(targetVol).catch(() => {});
+      }
+      return;
+    }
+    const inMs = mode === "cinematic" ? 720 : 320;
+    void rampLocalVolume(Math.max(0.02, targetVol * 0.05), targetVol, inMs);
+  }, [rampLocalVolume]);
+
   const refreshDevices = useCallback(async (): Promise<SpotifyDevice[]> => {
-    if (!isAuthenticated) return [];
+    if (!isAuthenticated || api.isRateLimited()) return [];
     try {
-      const list = await api.getDevices();
-      setDevices(list);
-      const active = list.find((d) => d.is_active);
+      const remoteList = await api.getDevices();
+      const localId = deviceIdRef.current;
+
+      // Filter out stale/zombie "SpotiDesk" entries left behind by a previous reload that aren't
+      // this live SDK instance and aren't actively playing, so the user never sees duplicate SpotiDesk rows.
+      const cleanedList = remoteList.filter((d) => {
+        if (d.name === PLAYER_NAME && localId && d.id && d.id !== localId && !d.is_active) {
+          return false;
+        }
+        return true;
+      });
+
+      setDevices(cleanedList);
+      const active = cleanedList.find((d) => d.is_active);
       if (active) {
-        activeDeviceIdRef.current = active.id;
-        setActiveDeviceName(active.name);
-        setLocalActive(Boolean(deviceIdRef.current && active.id === deviceIdRef.current));
+        const activeIsLocal = Boolean(localId && active.id === localId);
+        if (activeIsLocal) {
+          userSelectedRemoteIdRef.current = null;
+          activeDeviceIdRef.current = active.id;
+          setActiveDeviceName(active.name);
+          setLocalActive(true);
+        } else if (
+          wasPlayingRef.current ||
+          userSelectedRemoteIdRef.current === active.id ||
+          !localId
+        ) {
+          activeDeviceIdRef.current = active.id;
+          setActiveDeviceName(active.name);
+          setLocalActive(false);
+        } else {
+          // Another device (e.g. an idle TV) is marked active while paused and wasn't explicitly selected:
+          // keep SpotiDesk ready as the preferred local target.
+          activeDeviceIdRef.current = localId;
+          setActiveDeviceName(PLAYER_NAME);
+          setLocalActive(false);
+        }
       } else {
         setLocalActive(false);
+        if (localId && !userSelectedRemoteIdRef.current) {
+          activeDeviceIdRef.current = localId;
+          setActiveDeviceName(PLAYER_NAME);
+        }
       }
-      return list;
+      // Return the REAL Spotify Connect device list (never synthetic entries) so verification is 100% accurate
+      return remoteList;
     } catch {
       return [];
     }
   }, [api, isAuthenticated, setLocalActive]);
 
   const hydrateFromRemoteState = useCallback(async () => {
+    if (api.isRateLimited()) return null;
     const seq = ++hydrateSeqRef.current;
     try {
       const state = await api.getPlaybackState();
-      if (seq !== hydrateSeqRef.current) return;
-      if (!state) return;
+      if (seq !== hydrateSeqRef.current) return null;
+      if (!state) return null;
 
       const remoteIsLocal = Boolean(
         deviceIdRef.current && state.device?.id === deviceIdRef.current
       );
       // Avoid overwriting fresh local Web Playback SDK events with a slightly stale REST snapshot
       if (remoteIsLocal && performance.now() - lastSdkEventAtRef.current < 1500) {
-        return;
+        return state;
       }
 
       const prevWasPlaying = wasPlayingRef.current;
@@ -187,8 +307,22 @@ export function useSpotifyPlayer({
           ? Math.max(prevPosition, anchor.posMs + (performance.now() - anchor.wallMs))
           : prevPosition;
 
-      activeDeviceIdRef.current = state.device?.id ?? null;
-      if (state.device?.name) setActiveDeviceName(state.device.name);
+      const shouldFollowRemoteDevice =
+        remoteIsLocal ||
+        state.is_playing ||
+        !deviceIdRef.current ||
+        (Boolean(state.device?.id) && userSelectedRemoteIdRef.current === state.device?.id);
+
+      if (shouldFollowRemoteDevice) {
+        activeDeviceIdRef.current = state.device?.id ?? null;
+        if (state.device?.name) setActiveDeviceName(state.device.name);
+        if (remoteIsLocal) userSelectedRemoteIdRef.current = null;
+      } else {
+        // Remote device (e.g. a TV in standby) is paused and wasn't chosen by the user:
+        // hydrate the track metadata for continuity, but keep SpotiDesk as the local target.
+        activeDeviceIdRef.current = deviceIdRef.current;
+        setActiveDeviceName(PLAYER_NAME);
+      }
       setLocalActive(remoteIsLocal);
       setIsPlaying(state.is_playing);
       wasPlayingRef.current = state.is_playing;
@@ -237,7 +371,7 @@ export function useSpotifyPlayer({
         };
         lastTrackRef.current = nextTrack;
         recordRecentTrack(nextTrack.uri);
-        // Preserve object identity when track hasn't changed so effects (likes, Discord RPC) don't re-fire
+        // Preserve object identity when track hasn't changed so effects (e.g. likes) don't re-fire
         setCurrentTrack((prev) =>
           prev &&
           prev.uri === nextTrack.uri &&
@@ -265,8 +399,10 @@ export function useSpotifyPlayer({
           void triggerAutoplayRef.current(nextTrack);
         }
       }
+      return state;
     } catch {
       // Ignore when no playback is active
+      return null;
     }
   }, [api, recordRecentTrack, setLocalActive]);
 
@@ -353,8 +489,54 @@ export function useSpotifyPlayer({
           setIsSdkReady(true);
           setSdkError(null);
           notifyReadyWaiters(device_id);
-          void refreshDevices();
-          void hydrateFromRemoteState();
+
+          // Spotify Connect REST servers can take 0.5–2.5s to propagate a newly connected Web Playback SDK
+          // device_id. Wait gently until it appears in /me/player/devices, then quietly reclaim any
+          // paused/idle remote session (like a standby TV) onto this Mac without starting audio.
+          void (async () => {
+            const remoteState = await hydrateFromRemoteState();
+            if (cancelled) return;
+
+            // Poll gently for propagation so SpotiDesk appears promptly in the Connect menu
+            const delays = [400, 900, 1600];
+            let propagated = false;
+            for (const delay of delays) {
+              await sleep(delay);
+              if (cancelled || deviceIdRef.current !== device_id) return;
+              const live = await refreshDevices();
+              if (live.some((d) => d.id === device_id)) {
+                propagated = true;
+                break;
+              }
+            }
+            if (cancelled || deviceIdRef.current !== device_id) return;
+
+            const remoteIsPlayingElsewhere = Boolean(
+              remoteState?.is_playing &&
+                remoteState.device?.id &&
+                remoteState.device.id !== device_id
+            );
+
+            if (
+              propagated &&
+              !remoteIsPlayingElsewhere &&
+              !userSelectedRemoteIdRef.current &&
+              !claimedOnReadyRef.current
+            ) {
+              claimedOnReadyRef.current = true;
+              activeDeviceIdRef.current = device_id;
+              setActiveDeviceName(PLAYER_NAME);
+              try {
+                await api.transferPlayback(device_id, false);
+                if (!cancelled) {
+                  setLocalActive(true);
+                  void refreshDevices();
+                }
+              } catch {
+                // Silent: Spotify returns 404/204 if no prior playback session exists yet
+              }
+            }
+          })();
         });
 
         player.addListener("not_ready", () => {
@@ -386,6 +568,7 @@ export function useSpotifyPlayer({
               : prevPosition;
 
           lastSdkEventAtRef.current = performance.now();
+          setSdkError(null);
           setLocalActive(true);
           activeDeviceIdRef.current = deviceIdRef.current;
           setActiveDeviceName(PLAYER_NAME);
@@ -440,6 +623,13 @@ export function useSpotifyPlayer({
           hasNextSdkTracksRef.current = nextTracksRaw.length > 0;
 
           if (track) {
+            const trackChanged = lastSdkTrackUriRef.current !== track.uri;
+            lastSdkTrackUriRef.current = track.uri;
+            if (trackChanged && fadeInPendingRef.current && !state.paused) {
+              runSoftGlideIn();
+            } else if (state.paused && fadeInPendingRef.current) {
+              cancelSoftGlide(true);
+            }
             const mappedCurrent = {
               ...mapSdkTrack(track),
               durationMs: state.duration || track.duration_ms || 0,
@@ -518,8 +708,34 @@ export function useSpotifyPlayer({
       }
     })();
 
+    const handleBeforeUnload = () => {
+      localPlayer?.disconnect();
+    };
+    // macOS WKWebView requires an interactive user gesture to unlock the SDK's <audio> element;
+    // unlocking on the user's very first pointer/key interaction makes the first Play click instant.
+    let audioUnlocked = false;
+    const handleFirstGesture = () => {
+      if (audioUnlocked || !playerRef.current) return;
+      audioUnlocked = true;
+      try {
+        void playerRef.current.activateElement?.();
+      } catch {
+        // Ignore
+      }
+      window.removeEventListener("pointerdown", handleFirstGesture, true);
+      window.removeEventListener("keydown", handleFirstGesture, true);
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    window.addEventListener("pointerdown", handleFirstGesture, { capture: true, passive: true });
+    window.addEventListener("keydown", handleFirstGesture, { capture: true, passive: true });
+
     return () => {
       cancelled = true;
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      window.removeEventListener("pointerdown", handleFirstGesture, true);
+      window.removeEventListener("keydown", handleFirstGesture, true);
+      claimedOnReadyRef.current = false;
+      userSelectedRemoteIdRef.current = null;
       localPlayer?.disconnect();
       if (playerRef.current === localPlayer) {
         playerRef.current = null;
@@ -528,7 +744,9 @@ export function useSpotifyPlayer({
       notifyReadyWaiters(null);
     };
   }, [
+    api,
     isAuthenticated,
+    sdkEpoch,
     refreshDevices,
     hydrateFromRemoteState,
     notifyReadyWaiters,
@@ -536,6 +754,8 @@ export function useSpotifyPlayer({
     scheduleRemoteHydrate,
     setLocalActive,
     recordRecentTrack,
+    cancelSoftGlide,
+    runSoftGlideIn,
   ]);
 
   // Keep UI & Notch synced when playback is controlled remotely via Spotify Connect
@@ -545,13 +765,16 @@ export function useSpotifyPlayer({
 
     let cancelled = false;
     let timerId: number | null = null;
+    let lastFocusHydrateAt = 0;
 
     const scheduleNext = () => {
       if (cancelled) return;
-      const delay = document.hidden ? 10_000 : 4_000;
+      // Be very polite with Spotify Dev Mode rate limits:
+      // 5.5s only while actively playing remotely, 18s while paused, 25s while hidden.
+      const delay = document.hidden ? 25_000 : isPlaying ? 5_500 : 18_000;
       timerId = window.setTimeout(async () => {
         if (cancelled) return;
-        if (!document.hidden || isPlaying) {
+        if ((!document.hidden || isPlaying) && !api.isRateLimited()) {
           await hydrateFromRemoteState();
         }
         scheduleNext();
@@ -561,7 +784,14 @@ export function useSpotifyPlayer({
     scheduleNext();
 
     const handleVisibilityOrFocus = () => {
-      if (!document.hidden && !isLocalActiveRef.current) {
+      const now = performance.now();
+      if (
+        !document.hidden &&
+        !isLocalActiveRef.current &&
+        !api.isRateLimited() &&
+        now - lastFocusHydrateAt > 5_000
+      ) {
+        lastFocusHydrateAt = now;
         if (timerId !== null) window.clearTimeout(timerId);
         void hydrateFromRemoteState().finally(scheduleNext);
       }
@@ -576,7 +806,7 @@ export function useSpotifyPlayer({
       document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
       window.removeEventListener("focus", handleVisibilityOrFocus);
     };
-  }, [isAuthenticated, isLocalActive, isPlaying, hydrateFromRemoteState]);
+  }, [api, isAuthenticated, isLocalActive, isPlaying, hydrateFromRemoteState]);
 
   // Trigger an immediate remote refresh when a remote track reaches its natural end
   useEffect(() => {
@@ -599,6 +829,7 @@ export function useSpotifyPlayer({
 
   useEffect(() => {
     endTrackSyncUriRef.current = null;
+    endFadeUriRef.current = null;
   }, [currentTrack?.uri]);
 
   // Lightweight local progress ticker: pauses completely when paused or window is hidden
@@ -618,6 +849,27 @@ export function useSpotifyPlayer({
         const next = prev + delta;
         const clamped = durationMs > 0 ? Math.min(next, durationMs) : next;
         lastPositionRef.current = clamped;
+
+        // Automatic end-of-track Soft Glide ramp on local SDK playback
+        const mode = softGlideModeRef.current;
+        const leadMs = mode === "cinematic" ? 2200 : mode === "subtle" ? 1100 : 0;
+        const curUri = lastTrackRef.current?.uri;
+        if (
+          leadMs > 0 &&
+          isLocalActiveRef.current &&
+          durationMs > 15_000 &&
+          curUri &&
+          endFadeUriRef.current !== curUri &&
+          clamped >= durationMs - leadMs &&
+          clamped < durationMs - 150 &&
+          volumeRef.current > 0.03
+        ) {
+          endFadeUriRef.current = curUri;
+          fadeInPendingRef.current = true;
+          const baseVol = volumeRef.current;
+          void rampLocalVolume(baseVol, Math.max(0.02, baseVol * 0.06), Math.max(250, durationMs - clamped - 100));
+        }
+
         return clamped;
       });
     }, 250);
@@ -641,10 +893,17 @@ export function useSpotifyPlayer({
   }, [isPlaying, durationMs]);
 
   const targetDeviceId = useCallback(() => {
-    if (isLocalActiveRef.current && deviceIdRef.current) {
-      return deviceIdRef.current;
+    // Only route commands to a remote Spotify Connect device if it is actively playing right now
+    // or the user explicitly chose it in the device switcher.
+    if (
+      !isLocalActiveRef.current &&
+      activeDeviceIdRef.current &&
+      activeDeviceIdRef.current !== deviceIdRef.current &&
+      (userSelectedRemoteIdRef.current === activeDeviceIdRef.current || wasPlayingRef.current)
+    ) {
+      return activeDeviceIdRef.current;
     }
-    return activeDeviceIdRef.current ?? deviceIdRef.current ?? undefined;
+    return deviceIdRef.current ?? activeDeviceIdRef.current ?? undefined;
   }, []);
 
   const ensureLocalElementActivated = useCallback(async () => {
@@ -656,48 +915,57 @@ export function useSpotifyPlayer({
   }, []);
 
   /**
-   * Resolves a verified, currently-registered Spotify Connect device ID,
-   * reconnecting the local Web Playback SDK if needed.
+   * Resolves a verified, currently-registered Spotify Connect device ID.
+   * Crucially, waits patiently for Spotify Connect propagation BEFORE ever tearing down
+   * a healthy SDK connection (tearing down early resets the propagation clock and causes 404 loops).
    */
   const resolveVerifiedDeviceId = useCallback(async (): Promise<string | null> => {
-    let liveDevices = await refreshDevices();
+    // 1. If the SDK hasn't finished initial handshake yet, wait for `ready` first
+    let localId = deviceIdRef.current ?? (await waitForReadyDevice(3500));
 
-    // 1. Check if our current local SDK device is already registered on Spotify Connect
-    if (deviceIdRef.current && liveDevices.some((d) => d.id === deviceIdRef.current)) {
-      return deviceIdRef.current;
-    }
-
-    // 2. Check if another live instance named SpotyFast is registered
-    const namedSpotyFast = liveDevices.find((d) => d.name === PLAYER_NAME && d.id);
-    if (namedSpotyFast?.id) {
-      deviceIdRef.current = namedSpotyFast.id;
-      setDeviceId(namedSpotyFast.id);
-      return namedSpotyFast.id;
-    }
-
-    // 3. Wait briefly / reconnect local Web Playback SDK if not ready yet
-    if (!deviceIdRef.current && playerRef.current) {
-      try {
-        await playerRef.current.connect();
-      } catch {
-        // Ignore reconnect error
-      }
-      const readyId = await waitForReadyDevice(3000);
-      if (readyId) {
-        await sleep(300);
-        liveDevices = await refreshDevices();
-        if (liveDevices.some((d) => d.id === readyId)) {
-          return readyId;
+    // 2. Check if our live local SDK device is registered on Spotify Connect (with polite propagation backoff)
+    if (localId) {
+      const pollDelays = [0, 550, 950, 1400];
+      for (const delay of pollDelays) {
+        if (delay > 0) await sleep(delay);
+        const liveDevices = await refreshDevices();
+        const curLocal = deviceIdRef.current;
+        if (curLocal && liveDevices.some((d) => d.id === curLocal)) {
+          return curLocal;
         }
-        return readyId;
+        // If `not_ready` cleared deviceIdRef mid-wait, break out to recreate SDK cleanly
+        if (!curLocal) break;
+      }
+    }
+
+    // 3. Only if the SDK truly dropped or failed to propagate after ~3s, spin up a brand-new
+    // Spotify.Player instance (reusing a disconnected instance is unreliable on WKWebView).
+    if (performance.now() - lastSdkReconnectAtRef.current > 8000) {
+      lastSdkReconnectAtRef.current = performance.now();
+      deviceIdRef.current = null;
+      setDeviceId(null);
+      setIsSdkReady(false);
+      setSdkEpoch((e) => e + 1);
+
+      const freshId = await waitForReadyDevice(4500);
+      if (freshId) {
+        for (const delay of [500, 1000, 1500]) {
+          await sleep(delay);
+          const live = await refreshDevices();
+          if (live.some((d) => d.id === freshId)) {
+            return freshId;
+          }
+        }
+        return freshId;
       }
     }
 
     // 4. Fallback to any active or available Spotify Connect device
-    const active = liveDevices.find((d) => d.is_active && d.id);
+    const finalDevices = await refreshDevices();
+    const active = finalDevices.find((d) => d.is_active && d.id);
     if (active?.id) return active.id;
 
-    const firstAvailable = liveDevices.find((d) => !d.is_restricted && d.id);
+    const firstAvailable = finalDevices.find((d) => !d.is_restricted && d.id);
     return firstAvailable?.id ?? deviceIdRef.current ?? null;
   }, [refreshDevices, waitForReadyDevice]);
 
@@ -708,7 +976,15 @@ export function useSpotifyPlayer({
       offsetPosition?: number;
       offsetUri?: string;
     }) => {
-      await ensureLocalElementActivated();
+      const myPlaySeq = ++playSeqRef.current;
+      // Trigger WKWebView audio unlock synchronously inside the user's click turn
+      try {
+        void playerRef.current?.activateElement?.();
+      } catch {
+        // Ignore
+      }
+      await runSoftGlideOut();
+      if (playSeqRef.current !== myPlaySeq) return;
 
       const buildPayload = (devId?: string | null) => ({
         deviceId: devId,
@@ -725,11 +1001,14 @@ export function useSpotifyPlayer({
       let target = targetDeviceId();
       if (!target) {
         target = (await resolveVerifiedDeviceId()) ?? undefined;
+        if (playSeqRef.current !== myPlaySeq) return;
       }
 
       try {
         await api.play(buildPayload(target));
+        if (playSeqRef.current !== myPlaySeq) return;
         setSdkError(null);
+        window.setTimeout(() => runSoftGlideIn(), 700);
         // When targeting a remote Spotify Connect device (e.g. another PC), the local SDK
         // does not fire player_state_changed, so hydrate remote state immediately.
         if (!target || target !== deviceIdRef.current || !isLocalActiveRef.current) {
@@ -737,19 +1016,24 @@ export function useSpotifyPlayer({
         }
         return;
       } catch {
-        // Recovery path: verify live device, transfer playback, wait for Connect routing, and retry
+        if (playSeqRef.current !== myPlaySeq) return;
+        cancelSoftGlide(true);
+        // Recovery path: wait for Spotify Connect registration, transfer playback, and retry cleanly
         const verifiedId = await resolveVerifiedDeviceId();
+        if (playSeqRef.current !== myPlaySeq) return;
         if (!verifiedId) {
           setSdkError(
-            "No se encontró un dispositivo de reproducción activo. Espera un segundo a que SpotiDesk se conecte o elige un dispositivo en Spotify Connect."
+            "SpotiDesk aún se está conectando con Spotify. Intenta reproducir de nuevo en un segundo."
           );
           return;
         }
 
         try {
           await api.transferPlayback(verifiedId, false);
+          if (playSeqRef.current !== myPlaySeq) return;
           // Give Spotify Connect backend time to activate the newly transferred device
-          await sleep(450);
+          await sleep(420);
+          if (playSeqRef.current !== myPlaySeq) return;
           await api.play(buildPayload(verifiedId));
           activeDeviceIdRef.current = verifiedId;
           const isLocal = Boolean(deviceIdRef.current && verifiedId === deviceIdRef.current);
@@ -759,9 +1043,11 @@ export function useSpotifyPlayer({
             scheduleRemoteHydrate([350, 1100]);
           }
         } catch (retryErr) {
+          if (playSeqRef.current !== myPlaySeq) return;
           // One final retry after another brief settle delay for cold SDK wakeups
           try {
-            await sleep(550);
+            await sleep(650);
+            if (playSeqRef.current !== myPlaySeq) return;
             await api.play(buildPayload(verifiedId));
             activeDeviceIdRef.current = verifiedId;
             const isLocal = Boolean(deviceIdRef.current && verifiedId === deviceIdRef.current);
@@ -771,6 +1057,7 @@ export function useSpotifyPlayer({
               scheduleRemoteHydrate([350, 1100]);
             }
           } catch {
+            if (playSeqRef.current !== myPlaySeq) return;
             setSdkError(
               retryErr instanceof Error
                 ? `No se pudo reproducir (${retryErr.message}). Selecciona "SpotiDesk" en el selector de dispositivos abajo a la derecha.`
@@ -782,8 +1069,10 @@ export function useSpotifyPlayer({
     },
     [
       api,
-      ensureLocalElementActivated,
+      cancelSoftGlide,
       resolveVerifiedDeviceId,
+      runSoftGlideIn,
+      runSoftGlideOut,
       scheduleRemoteHydrate,
       setLocalActive,
       targetDeviceId,
@@ -840,6 +1129,24 @@ export function useSpotifyPlayer({
           setSdkError("No hay ningún dispositivo activo para reanudar.");
           return;
         }
+        const resumingOnLocalFromIdleRemote = Boolean(
+          deviceIdRef.current && target === deviceIdRef.current && !isLocalActiveRef.current
+        );
+        if (resumingOnLocalFromIdleRemote && lastTrackRef.current) {
+          // Cleanly transfer the paused queue onto this Mac and start playing here
+          // instead of waking up an idle TV/speaker.
+          try {
+            await api.transferPlayback(target, true);
+            activeDeviceIdRef.current = target;
+            setActiveDeviceName(PLAYER_NAME);
+            setLocalActive(true);
+            setIsPlaying(true);
+            wasPlayingRef.current = true;
+            return;
+          } catch {
+            // Fall through to standard play if transfer wasn't needed
+          }
+        }
         await api.play({ deviceId: target });
         setIsPlaying(true);
         wasPlayingRef.current = true;
@@ -856,6 +1163,7 @@ export function useSpotifyPlayer({
     isPlaying,
     resolveVerifiedDeviceId,
     scheduleRemoteHydrate,
+    setLocalActive,
     targetDeviceId,
   ]);
 
@@ -870,7 +1178,9 @@ export function useSpotifyPlayer({
         await triggerAutoplayRef.current(lastTrackRef.current);
         return;
       }
+      await runSoftGlideOut();
       await playerRef.current.nextTrack();
+      window.setTimeout(() => runSoftGlideIn(), 650);
       return;
     }
     try {
@@ -879,11 +1189,13 @@ export function useSpotifyPlayer({
     } catch {
       // Ignore
     }
-  }, [api, repeatMode, scheduleRemoteHydrate]);
+  }, [api, repeatMode, runSoftGlideIn, runSoftGlideOut, scheduleRemoteHydrate]);
 
   const previousTrack = useCallback(async () => {
     if (playerRef.current && isLocalActiveRef.current) {
+      await runSoftGlideOut();
       await playerRef.current.previousTrack();
+      window.setTimeout(() => runSoftGlideIn(), 650);
       return;
     }
     try {
@@ -892,11 +1204,12 @@ export function useSpotifyPlayer({
     } catch {
       // Ignore
     }
-  }, [api, scheduleRemoteHydrate]);
+  }, [api, runSoftGlideIn, runSoftGlideOut, scheduleRemoteHydrate]);
 
   const seek = useCallback(
     async (ms: number) => {
       const clamped = Math.max(0, Math.min(durationMs || ms, Math.round(ms)));
+      cancelSoftGlide(true);
       setPositionMs(clamped);
       if (playerRef.current && isLocalActiveRef.current) {
         await playerRef.current.seek(clamped);
@@ -908,12 +1221,13 @@ export function useSpotifyPlayer({
         // Ignore
       }
     },
-    [api, durationMs]
+    [api, cancelSoftGlide, durationMs]
   );
 
   const setVolume = useCallback(
     async (nextVol: number) => {
       const clamped = Math.max(0, Math.min(1, nextVol));
+      cancelSoftGlide(false);
       setVolumeState(clamped);
       setMuted(clamped === 0);
       if (clamped > 0) previousVolumeRef.current = clamped;
@@ -928,7 +1242,7 @@ export function useSpotifyPlayer({
         // Ignore
       }
     },
-    [api]
+    [api, cancelSoftGlide]
   );
 
   const toggleMute = useCallback(async () => {
@@ -964,12 +1278,14 @@ export function useSpotifyPlayer({
   const transferToDevice = useCallback(
     async (targetId: string) => {
       try {
+        const isLocal = Boolean(deviceIdRef.current && targetId === deviceIdRef.current);
+        userSelectedRemoteIdRef.current = isLocal ? null : targetId;
         await api.transferPlayback(targetId, isPlaying);
         activeDeviceIdRef.current = targetId;
-        const isLocal = Boolean(deviceIdRef.current && targetId === deviceIdRef.current);
         setLocalActive(isLocal);
         const found = devices.find((d) => d.id === targetId);
         if (found) setActiveDeviceName(found.name);
+        else if (isLocal) setActiveDeviceName(PLAYER_NAME);
         setTimeout(() => void refreshDevices(), 450);
         if (!isLocal) {
           scheduleRemoteHydrate([450, 1200]);

@@ -53,82 +53,133 @@ export interface SpotifyApiClientOptions {
 export class SpotifyApiClient {
   private getToken: () => Promise<string | null>;
   private forceRefresh: () => Promise<string | null>;
+  private inflightGets = new Map<string, Promise<unknown>>();
+  private rateLimitedUntil = 0;
 
   constructor(options: SpotifyApiClientOptions) {
     this.getToken = options.getToken;
     this.forceRefresh = options.forceRefresh;
   }
 
+  isRateLimited(): boolean {
+    return Date.now() < this.rateLimitedUntil;
+  }
+
   private async request<T>(
     endpoint: string,
     init: RequestInit = {},
-    retried = false
+    retried = false,
+    rateLimitAttempt = 0
   ): Promise<T> {
-    const token = retried ? await this.forceRefresh() : await this.getToken();
-    if (!token) {
-      throw new SpotifyApiError(401, "Sesión no autenticada.");
+    const method = (init.method ?? "GET").toUpperCase();
+    const isGet = method === "GET";
+
+    if (isGet && !retried && rateLimitAttempt === 0) {
+      const existing = this.inflightGets.get(endpoint);
+      if (existing) {
+        return existing as Promise<T>;
+      }
     }
 
-    const url = endpoint.startsWith("http") ? endpoint : `${API_BASE}${endpoint}`;
-    const headers = new Headers(init.headers);
-    headers.set("Authorization", `Bearer ${token}`);
-    if (init.body && !headers.has("Content-Type")) {
-      headers.set("Content-Type", "application/json");
-    }
+    const execute = async (): Promise<T> => {
+      const token = retried ? await this.forceRefresh() : await this.getToken();
+      if (!token) {
+        throw new SpotifyApiError(401, "Sesión no autenticada.");
+      }
 
-    const res = await fetch(url, { ...init, headers });
+      const url = endpoint.startsWith("http") ? endpoint : `${API_BASE}${endpoint}`;
+      const headers = new Headers(init.headers);
+      headers.set("Authorization", `Bearer ${token}`);
+      if (init.body && !headers.has("Content-Type")) {
+        headers.set("Content-Type", "application/json");
+      }
 
-    if (res.status === 401 && !retried) {
-      return this.request<T>(endpoint, init, true);
-    }
+      const res = await fetch(url, { ...init, headers });
 
-    if (res.status === 204 || res.status === 202) {
-      return undefined as T;
-    }
+      if (res.status === 401 && !retried) {
+        return this.request<T>(endpoint, init, true, rateLimitAttempt);
+      }
 
-    if (!res.ok) {
-      let message = `Spotify API error (${res.status})`;
-      let rawText = "";
-      try {
-        rawText = (await res.text()).trim();
-        if (rawText) {
-          try {
-            const errBody = JSON.parse(rawText) as { error?: { message?: string } };
-            if (errBody?.error?.message) {
-              message = errBody.error.message;
-            } else {
+      if (res.status === 429) {
+        const retryHeader = Number(res.headers.get("retry-after"));
+        const hasHeader = Number.isFinite(retryHeader) && retryHeader > 0;
+        const retrySec = hasHeader ? retryHeader : rateLimitAttempt === 0 ? 2 : 4;
+        this.rateLimitedUntil = Math.max(
+          this.rateLimitedUntil,
+          Date.now() + Math.min(retrySec + 1, 30) * 1000
+        );
+
+        // Automatically back off & retry up to 2 times for short GET rate-limit windows
+        if (isGet && rateLimitAttempt < 2 && retrySec <= 5) {
+          const waitMs = Math.min(5500, retrySec * 1000 + 250 + rateLimitAttempt * 1200);
+          await new Promise((r) => window.setTimeout(r, waitMs));
+          return this.request<T>(endpoint, init, retried, rateLimitAttempt + 1);
+        }
+
+        throw new SpotifyApiError(
+          429,
+          `Spotify limitó temporalmente las peticiones. Espera ${Math.min(retrySec, 30)}s e intenta de nuevo.`
+        );
+      }
+
+      if (res.status === 204 || res.status === 202) {
+        return undefined as T;
+      }
+
+      if (!res.ok) {
+        let message = `Spotify API error (${res.status})`;
+        let rawText = "";
+        try {
+          rawText = (await res.text()).trim();
+          if (rawText) {
+            try {
+              const errBody = JSON.parse(rawText) as { error?: { message?: string } };
+              if (errBody?.error?.message) {
+                message = errBody.error.message;
+              } else {
+                message = rawText;
+              }
+            } catch {
+              // Non-JSON error body (e.g. Spotify Development Mode 403 plain text)
               message = rawText;
             }
-          } catch {
-            // Non-JSON error body (e.g. Spotify Development Mode 403 plain text)
-            message = rawText;
           }
+        } catch {
+          // Ignore body read error
         }
+
+        const notRegistered = isDevModeUnregistered403(res.status, rawText, endpoint);
+        if (notRegistered) {
+          message = DEV_MODE_USER_NOT_ALLOWED_MSG;
+        }
+        throw new SpotifyApiError(res.status, message, notRegistered);
+      }
+
+      const text = await res.text();
+      if (!text) return undefined as T;
+
+      const contentType = res.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json")) {
+        return undefined as T;
+      }
+
+      try {
+        return JSON.parse(text) as T;
       } catch {
-        // Ignore body read error
+        // Spotify playback/queue endpoints sometimes return a plain snapshot ID string with 200 OK
+        return undefined as T;
       }
+    };
 
-      const notRegistered = isDevModeUnregistered403(res.status, rawText, endpoint);
-      if (notRegistered) {
-        message = DEV_MODE_USER_NOT_ALLOWED_MSG;
-      }
-      throw new SpotifyApiError(res.status, message, notRegistered);
+    if (isGet && !retried && rateLimitAttempt === 0) {
+      const promise = execute().finally(() => {
+        this.inflightGets.delete(endpoint);
+      });
+      this.inflightGets.set(endpoint, promise);
+      return promise;
     }
 
-    const text = await res.text();
-    if (!text) return undefined as T;
-
-    const contentType = res.headers.get("content-type") ?? "";
-    if (!contentType.includes("application/json")) {
-      return undefined as T;
-    }
-
-    try {
-      return JSON.parse(text) as T;
-    } catch {
-      // Spotify playback/queue endpoints sometimes return a plain snapshot ID string with 200 OK
-      return undefined as T;
-    }
+    return execute();
   }
 
   getMe(): Promise<SpotifyUser> {
@@ -483,6 +534,113 @@ export class SpotifyApiClient {
         await this.request<void>(`/playlists/${id}/tracks`, {
           method: "POST",
           body: JSON.stringify({ uris: [uri] }),
+        });
+        return;
+      }
+      throw err;
+    }
+  }
+
+  async removeTrackFromPlaylist(playlistId: string, uri: string): Promise<void> {
+    const id = encodeURIComponent(playlistId);
+    const body = JSON.stringify({ tracks: [{ uri }] });
+    try {
+      await this.request<void>(`/playlists/${id}/items`, {
+        method: "DELETE",
+        body,
+      });
+    } catch (err) {
+      if (err instanceof SpotifyApiError && (err.status === 404 || err.status === 400)) {
+        await this.request<void>(`/playlists/${id}/tracks`, {
+          method: "DELETE",
+          body,
+        });
+        return;
+      }
+      throw err;
+    }
+  }
+
+  async updatePlaylistDetails(
+    playlistId: string,
+    params: { name: string; description: string }
+  ): Promise<void> {
+    const id = encodeURIComponent(playlistId);
+    await this.request<void>(`/playlists/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        name: params.name.trim(),
+        description: params.description.trim(),
+      }),
+    });
+  }
+
+  async addTracksToPlaylist(playlistId: string, uris: string[]): Promise<void> {
+    if (uris.length === 0) return;
+    const id = encodeURIComponent(playlistId);
+    const batch = uris.slice(0, 100);
+    const body = JSON.stringify({ uris: batch });
+    try {
+      await this.request<void>(`/playlists/${id}/items`, {
+        method: "POST",
+        body,
+      });
+    } catch (err) {
+      if (err instanceof SpotifyApiError && (err.status === 404 || err.status === 400)) {
+        await this.request<void>(`/playlists/${id}/tracks`, {
+          method: "POST",
+          body,
+        });
+        return;
+      }
+      throw err;
+    }
+  }
+
+  async reorderPlaylistTrack(
+    playlistId: string,
+    rangeStart: number,
+    insertBefore: number
+  ): Promise<void> {
+    const id = encodeURIComponent(playlistId);
+    const body = JSON.stringify({
+      range_start: rangeStart,
+      insert_before: insertBefore,
+      range_length: 1,
+    });
+    try {
+      await this.request<void>(`/playlists/${id}/items`, {
+        method: "PUT",
+        body,
+      });
+    } catch (err) {
+      if (err instanceof SpotifyApiError && (err.status === 404 || err.status === 400)) {
+        await this.request<void>(`/playlists/${id}/tracks`, {
+          method: "PUT",
+          body,
+        });
+        return;
+      }
+      throw err;
+    }
+  }
+
+  async removePlaylistPositions(
+    playlistId: string,
+    items: Array<{ uri: string; positions: number[] }>
+  ): Promise<void> {
+    const id = encodeURIComponent(playlistId);
+    const body = JSON.stringify({ tracks: items });
+    try {
+      await this.request<void>(`/playlists/${id}/items`, {
+        method: "DELETE",
+        body,
+      });
+    } catch (err) {
+      if (err instanceof SpotifyApiError && (err.status === 404 || err.status === 400)) {
+        await this.request<void>(`/playlists/${id}/tracks`, {
+          method: "DELETE",
+          body,
         });
         return;
       }

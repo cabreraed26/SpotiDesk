@@ -58,8 +58,9 @@ function cacheSet(key: string, value: LyricsData | null) {
 }
 
 async function fetchFromLrcLib(track: UnifiedTrack, signal: AbortSignal): Promise<LyricsData | null> {
-  const primaryArtist = track.artists.split(",")[0]?.trim() || track.artists;
-  const cleanedTitle = cleanTrackTitle(track.name);
+  const artistText = track.artists ?? "";
+  const primaryArtist = artistText.split(",")[0]?.trim() || artistText;
+  const cleanedTitle = cleanTrackTitle(track.name ?? "");
   const durationSec = Math.round((track.durationMs || 0) / 1000);
 
   const params = new URLSearchParams({

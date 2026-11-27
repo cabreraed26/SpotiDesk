@@ -21,6 +21,28 @@ export default defineConfig(() => ({
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   clearScreen: false,
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: "vendor-react",
+              test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+            },
+            {
+              name: "vendor-icons",
+              test: /node_modules[\\/]lucide-react[\\/]/,
+            },
+            {
+              name: "vendor-tauri",
+              test: /node_modules[\\/](@tauri-apps|@tanstack)[\\/]/,
+            },
+          ],
+        },
+      },
+    },
+  },
   server: {
     port: 1420,
     strictPort: true,

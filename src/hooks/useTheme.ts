@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 export type ThemeMode = "dark" | "light";
 
@@ -27,6 +28,8 @@ export function useTheme() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    // Keep macOS/Windows native window appearance synced with Obsidian/Porcelain so traffic lights keep proper contrast when unfocused
+    void invoke("set_window_theme", { theme }).catch(() => {});
     try {
       localStorage.setItem(THEME_STORAGE_KEY, theme);
     } catch {

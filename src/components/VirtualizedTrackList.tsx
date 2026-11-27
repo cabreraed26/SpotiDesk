@@ -1,10 +1,15 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Clock3, MoreHorizontal, Pause, Play } from "lucide-react";
+import { Check, Clock3, MoreHorizontal, Pause, Play } from "lucide-react";
 import type { UnifiedTrack } from "../types/spotify";
 import { formatDuration } from "../lib/format";
 import { LazyCover } from "./LazyCover";
 import { ArtistLinks } from "./ArtistLinks";
+import {
+  startTrackPointerDrag,
+  subscribeTrackDrag,
+  wasRecentTrackDrag,
+} from "./TrackDragOverlay";
 
 interface VirtualizedTrackListProps {
   tracks: UnifiedTrack[];
@@ -14,6 +19,10 @@ interface VirtualizedTrackListProps {
   showCover?: boolean;
   hasMore?: boolean;
   isLoadingMore?: boolean;
+  emptyMessage?: string;
+  reorderPlaylistId?: string;
+  selectedIndices?: Set<number>;
+  onRowSelect?: (e: React.MouseEvent, index: number) => boolean;
   onLoadMore?: () => void;
   onPlayTrack: (track: UnifiedTrack, index: number) => void;
   onTogglePlay: () => void;
@@ -23,6 +32,7 @@ interface VirtualizedTrackListProps {
   headerSlot?: React.ReactNode;
 }
 
+export const SPOTIDESK_TRACK_DRAG_MIME = "application/x-spotidesk-track";
 const ROW_HEIGHT = 56;
 
 export function VirtualizedTrackList({
@@ -33,6 +43,10 @@ export function VirtualizedTrackList({
   showCover = true,
   hasMore = false,
   isLoadingMore = false,
+  emptyMessage,
+  reorderPlaylistId,
+  selectedIndices,
+  onRowSelect,
   onLoadMore,
   onPlayTrack,
   onTogglePlay,
@@ -42,6 +56,25 @@ export function VirtualizedTrackList({
   headerSlot,
 }: VirtualizedTrackListProps) {
   const scrollParentRef = useRef<HTMLDivElement | null>(null);
+  const [reorderTargetIdx, setReorderTargetIdx] = useState<number | null>(null);
+  const [reorderSourceIdx, setReorderSourceIdx] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!reorderPlaylistId) {
+      setReorderTargetIdx(null);
+      setReorderSourceIdx(null);
+      return;
+    }
+    return subscribeTrackDrag((drag) => {
+      if (drag?.target?.kind === "reorder" && drag.target.playlistId === reorderPlaylistId) {
+        setReorderTargetIdx(drag.target.toIndex);
+        setReorderSourceIdx(drag.target.fromIndex);
+      } else {
+        setReorderTargetIdx(null);
+        setReorderSourceIdx(null);
+      }
+    });
+  }, [reorderPlaylistId]);
 
   const virtualizer = useVirtualizer({
     count: tracks.length,
@@ -87,7 +120,7 @@ export function VirtualizedTrackList({
       {/* Virtualized rows container */}
       {tracks.length === 0 ? (
         <div className="py-16 text-center text-[13px] text-[var(--text-secondary)]">
-          No hay canciones en esta lista.
+          {emptyMessage || "No hay canciones en esta lista."}
         </div>
       ) : (
         <div
@@ -97,6 +130,9 @@ export function VirtualizedTrackList({
           {virtualItems.map((virtualRow) => {
             const track = tracks[virtualRow.index];
             const isCurrent = currentTrackUri === track.uri;
+            const isSelected = Boolean(selectedIndices?.has(virtualRow.index));
+            const isReorderHover = reorderTargetIdx === virtualRow.index;
+            const isReorderDragging = reorderSourceIdx === virtualRow.index;
 
             return (
               <div
@@ -110,16 +146,35 @@ export function VirtualizedTrackList({
                   transform: `translateY(${virtualRow.start}px)`,
                 }}
               >
+                {isReorderHover && (
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute left-3 right-3 top-0 h-[2px] rounded-full bg-[var(--text-primary)] z-20"
+                  />
+                )}
                 <div
                   role="button"
                   tabIndex={0}
+                  data-reorder-playlist-id={reorderPlaylistId}
+                  data-reorder-index={reorderPlaylistId ? virtualRow.index : undefined}
+                  onPointerDown={(e) =>
+                    startTrackPointerDrag(
+                      e,
+                      track,
+                      reorderPlaylistId
+                        ? { playlistId: reorderPlaylistId, index: virtualRow.index }
+                        : undefined
+                    )
+                  }
                   onContextMenu={(e) => {
                     if (onTrackContextMenu) {
                       e.preventDefault();
                       onTrackContextMenu(e, track, virtualRow.index);
                     }
                   }}
-                  onClick={() => {
+                  onClick={(e) => {
+                    if (wasRecentTrackDrag()) return;
+                    if (onRowSelect?.(e, virtualRow.index)) return;
                     if (isCurrent) {
                       onTogglePlay();
                     } else {
@@ -133,19 +188,27 @@ export function VirtualizedTrackList({
                       else onPlayTrack(track, virtualRow.index);
                     }
                   }}
-                  className={`group h-full px-3 rounded-lg grid items-center gap-4 transition-all duration-150 ease-apple active:scale-[0.992] cursor-pointer ${
+                  className={`chrome-no-select group h-full px-3 rounded-lg grid items-center gap-4 transition-all duration-150 ease-apple active:scale-[0.992] cursor-pointer ${
                     showAlbumColumn
                       ? "grid-cols-[36px_minmax(0,2fr)_minmax(0,1.2fr)_88px]"
                       : "grid-cols-[36px_minmax(0,1fr)_88px]"
                   } ${
-                    isCurrent
-                      ? "bg-[var(--bg-active)]"
-                      : "hover:bg-[var(--bg-hover)]"
+                    isReorderDragging
+                      ? "opacity-40"
+                      : isSelected
+                        ? "bg-[var(--bg-active)] ring-1 ring-[var(--text-primary)]/40"
+                        : isCurrent
+                          ? "bg-[var(--bg-active)]"
+                          : "hover:bg-[var(--bg-hover)]"
                   }`}
                 >
-                  {/* Track index / Play indicator */}
+                  {/* Track index / Selection check / Play indicator */}
                   <div className="flex items-center justify-center w-9">
-                    {isCurrent ? (
+                    {isSelected ? (
+                      <span className="w-5 h-5 rounded-full bg-[var(--solid-bg)] text-[var(--solid-fg)] flex items-center justify-center">
+                        <Check size={11} strokeWidth={2.4} />
+                      </span>
+                    ) : isCurrent ? (
                       <>
                         <div
                           className={`group-hover:hidden flex items-end gap-[2px] h-3.5 ${

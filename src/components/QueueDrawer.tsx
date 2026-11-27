@@ -6,6 +6,7 @@ import { formatDuration, normalizeTrack } from "../lib/format";
 import { viewCache } from "../lib/viewCache";
 import { LazyCover } from "./LazyCover";
 import { ArtistLinks } from "./ArtistLinks";
+import { subscribeTrackDrag } from "./TrackDragOverlay";
 
 interface QueueDrawerProps {
   api: SpotifyApiClient;
@@ -36,6 +37,13 @@ export function QueueDrawer({
   const [hasLoadedOnce, setHasLoadedOnce] = useState<boolean>(
     () => viewCache.lastQueue !== null || fallbackQueue.length > 0
   );
+  const [isDropHovered, setIsDropHovered] = useState(false);
+
+  useEffect(() => {
+    return subscribeTrackDrag((drag) => {
+      setIsDropHovered(drag?.target?.kind === "queue");
+    });
+  }, []);
 
   const loadQueue = useCallback(async () => {
     setIsRefreshing(true);
@@ -56,6 +64,11 @@ export function QueueDrawer({
 
   useEffect(() => {
     void loadQueue();
+    const onQueueUpdated = () => {
+      window.setTimeout(() => void loadQueue(), 350);
+    };
+    window.addEventListener("spotidesk:queue-updated", onQueueUpdated);
+    return () => window.removeEventListener("spotidesk:queue-updated", onQueueUpdated);
   }, [loadQueue]);
 
   useEffect(() => {
@@ -68,8 +81,14 @@ export function QueueDrawer({
 
   return (
     <aside
+      data-persistent-queue
+      data-drop-queue="true"
       aria-label="Cola de reproducción"
-      className="anim-track-next popover-glass fixed top-10 right-0 bottom-0 w-[336px] z-35 border-l border-[var(--border-hairline)] flex flex-col"
+      className={`anim-track-next popover-glass fixed top-10 right-0 bottom-0 w-[336px] z-35 border-l flex flex-col transition-all duration-150 ${
+        isDropHovered
+          ? "border-[var(--text-primary)]/60 ring-1 ring-inset ring-[var(--text-primary)]/35"
+          : "border-[var(--border-hairline)]"
+      }`}
     >
       {/* Header */}
       <div className="chrome-no-select h-13 px-5 border-b border-[var(--border-hairline)] flex items-center justify-between">
